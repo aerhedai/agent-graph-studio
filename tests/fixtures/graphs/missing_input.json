@@ -1,0 +1,12 @@
+{
+  "version": "0.1",
+  "nodes": [
+    { "id": "n0", "type": "text_input", "config": { "value": "Say hello in exactly five words." } },
+    { "id": "n1", "type": "llm_call", "config": { "model": "claude-opus-4-8", "system_prompt": "", "max_tokens": 100 } },
+    { "id": "n2", "type": "text_output", "config": {} }
+  ],
+  "edges": [
+    { "from": { "node": "n0", "slot": "text" }, "to": { "node": "n1", "slot": "prompt" } },
+    { "from": { "node": "n1", "slot": "response" }, "to": { "node": "n2", "slot": "text" } }
+  ]
+}
