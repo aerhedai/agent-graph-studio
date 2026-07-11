@@ -1,0 +1,69 @@
+from __future__ import annotations
+
+from backend.execution.engine import run_graph
+from backend.llm.client import LLMResponse
+from backend.schema.loader import parse_graph_json
+from conftest import load_fixture_text
+from fakes import FakeLLMClient
+
+
+def _load(name: str):
+    return parse_graph_json(load_fixture_text(name))
+
+
+def test_linear_graph_executes_and_returns_llm_response():
+    graph = _load("valid_linear.json")
+    client = FakeLLMClient(response=LLMResponse(text="mocked reply", input_tokens=12, output_tokens=8))
+
+    run_result = run_graph(graph, llm_client=client)
+
+    assert run_result.result == {"n3": "mocked reply"}
+    llm_trace = next(t for t in run_result.trace if t.node_id == "n2")
+    assert llm_trace.error is None
+    assert llm_trace.outputs == {"response": "mocked reply"}
+    assert llm_trace.token_cost.input_tokens == 12
+    assert llm_trace.token_cost.output_tokens == 8
+    assert client.calls[0]["prompt"] == "hello"
+
+
+def test_branching_graph_fires_true_branch_only():
+    graph = _load("valid_branching.json")  # text_input value = "yes", condition contains('yes')
+
+    run_result = run_graph(graph)
+
+    traced_ids = {t.node_id for t in run_result.trace}
+    assert "n3" in traced_ids  # true-branch text_output executed
+    assert "n4" not in traced_ids  # false-branch text_output did not execute
+    assert run_result.result == {"n3": "yes"}
+
+
+def test_branching_graph_fires_false_branch_only():
+    graph = _load("valid_branching.json")
+    graph.nodes[0].config["value"] = "no"
+
+    run_result = run_graph(graph)
+
+    traced_ids = {t.node_id for t in run_result.trace}
+    assert "n4" in traced_ids
+    assert "n3" not in traced_ids
+    assert run_result.result == {"n4": "no"}
+
+
+def test_every_node_execution_produces_complete_trace_record():
+    graph = _load("valid_linear.json")
+    client = FakeLLMClient(response=LLMResponse(text="hi", input_tokens=1, output_tokens=2))
+
+    run_result = run_graph(graph, llm_client=client)
+
+    assert len(run_result.trace) == 3
+    for record in run_result.trace:
+        assert record.run_id
+        assert record.node_id
+        assert record.node_type
+        assert record.started_at
+        assert record.finished_at
+        assert record.error is None
+
+    llm_trace = next(t for t in run_result.trace if t.node_type == "llm_call")
+    assert llm_trace.token_cost.input_tokens == 1
+    assert llm_trace.token_cost.output_tokens == 2

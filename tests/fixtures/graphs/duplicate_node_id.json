@@ -1,0 +1,8 @@
+{
+  "version": "0.1",
+  "nodes": [
+    { "id": "n1", "type": "text_input", "config": { "value": "hello" } },
+    { "id": "n1", "type": "text_output", "config": {} }
+  ],
+  "edges": []
+}

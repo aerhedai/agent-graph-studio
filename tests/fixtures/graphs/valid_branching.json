@@ -1,0 +1,14 @@
+{
+  "version": "0.1",
+  "nodes": [
+    { "id": "n1", "type": "text_input", "config": { "value": "yes" } },
+    { "id": "n2", "type": "conditional_branch", "config": { "condition": "contains('yes')" } },
+    { "id": "n3", "type": "text_output", "config": {} },
+    { "id": "n4", "type": "text_output", "config": {} }
+  ],
+  "edges": [
+    { "from": { "node": "n1", "slot": "text" }, "to": { "node": "n2", "slot": "value" } },
+    { "from": { "node": "n2", "slot": "true_branch" }, "to": { "node": "n3", "slot": "text" } },
+    { "from": { "node": "n2", "slot": "false_branch" }, "to": { "node": "n4", "slot": "text" } }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "version": "0.1",
+  "nodes": [
+    { "id": "a", "type": "conditional_branch", "config": { "condition": "contains('yes')" } },
+    { "id": "b", "type": "conditional_branch", "config": { "condition": "contains('yes')" } }
+  ],
+  "edges": [
+    { "from": { "node": "a", "slot": "true_branch" }, "to": { "node": "b", "slot": "value" } },
+    { "from": { "node": "b", "slot": "true_branch" }, "to": { "node": "a", "slot": "value" } }
+  ]
+}
