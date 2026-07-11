@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import ValidationError as PydanticValidationError
 
-from backend.registry.base import NodeRegistry
+from backend.registry.base import NodeRegistry, effective_inputs, effective_outputs
 from backend.schema.models import EdgeSpec, GraphSpec
 from backend.schema.topo import kahn_order
 from backend.validation.errors import ValidationIssue
@@ -61,7 +61,12 @@ def check_required_inputs(
         if node.id in unregistered_ids:
             continue
         definition = registry.get(node.type)
-        for slot in definition.inputs:
+        inputs = effective_inputs(definition, node)
+        if inputs is None:
+            # Unresolvable schema (e.g. malformed config) -- check_config_schema
+            # reports the real error; don't pile on a confusing second one.
+            continue
+        for slot in inputs:
             if slot.required and (node.id, slot.name) not in covered:
                 issues.append(
                     ValidationIssue(
@@ -90,8 +95,15 @@ def check_type_mismatches(
         src_def = registry.get(src_node.type)
         dst_def = registry.get(dst_node.type)
 
-        src_slot = next((s for s in src_def.outputs if s.name == edge.from_.slot), None)
-        dst_slot = next((s for s in dst_def.inputs if s.name == edge.to.slot), None)
+        src_outputs = effective_outputs(src_def, src_node)
+        dst_inputs = effective_inputs(dst_def, dst_node)
+        if src_outputs is None or dst_inputs is None:
+            # Unresolvable schema on one end (e.g. malformed config) --
+            # check_config_schema reports the real error.
+            continue
+
+        src_slot = next((s for s in src_outputs if s.name == edge.from_.slot), None)
+        dst_slot = next((s for s in dst_inputs if s.name == edge.to.slot), None)
 
         if src_slot is None:
             issues.append(

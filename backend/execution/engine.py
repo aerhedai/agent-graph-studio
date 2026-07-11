@@ -6,7 +6,7 @@ from uuid import uuid4
 
 from backend.execution.trace import RunResult, TokenCost, TraceRecord
 from backend.execution.types import ExecutionContext, NodeResult
-from backend.registry.base import NodeRegistry, default_registry
+from backend.registry.base import NodeRegistry, default_registry, effective_inputs
 from backend.schema.models import GraphSpec
 from backend.schema.topo import kahn_order
 from backend.validation.validator import validate_graph
@@ -56,7 +56,7 @@ def run_graph(
 
         gathered_inputs: dict[str, Any] = {}
         skip = False
-        for slot in definition.inputs:
+        for slot in effective_inputs(definition, node) or []:
             edge = incoming_by_slot.get((node_id, slot.name))
             key = (edge.from_.node, edge.from_.slot) if edge else None
             if key is None or key not in available:

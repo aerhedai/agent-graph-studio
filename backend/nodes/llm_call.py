@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from backend.execution.errors import NodeExecutionError
@@ -11,9 +13,11 @@ from backend.schema.types import TEXT
 
 
 class LLMCallConfig(BaseModel):
+    provider: str = "anthropic"
     model: str
     system_prompt: str = ""
     max_tokens: int = Field(gt=0)
+    provider_options: dict[str, Any] = Field(default_factory=dict)
 
 
 @register_node(
@@ -27,13 +31,12 @@ def execute_llm_call(ctx: ExecutionContext) -> NodeResult:
     try:
         client = ctx.resources.get("llm_client")
         if client is None:
-            # Local import (not module-level): keeps `anthropic` out of this
-            # module's import graph unless an llm_call node actually runs
-            # without an injected client, and lets tests monkeypatch the
-            # class on backend.llm.client at call time.
-            from backend.llm.client import AnthropicLLMClient
+            # Dispatch to the right provider client lives entirely in
+            # backend/llm/providers.py -- this node (and the engine) never
+            # branches on config.provider itself.
+            from backend.llm.providers import build_client
 
-            client = AnthropicLLMClient()
+            client = build_client(config.provider, config.provider_options)
         response = client.complete(
             model=config.model,
             system_prompt=config.system_prompt,

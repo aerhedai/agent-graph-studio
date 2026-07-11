@@ -77,3 +77,14 @@ def test_uppercase_text_node_runs_through_the_engine_untouched():
     run_result = run_graph(graph)
 
     assert run_result.result == {"n3": "HELLO WORLD"}
+
+
+def test_code_node_dynamic_schema_runs_through_the_engine():
+    # code node's input port ("text") is resolved per-instance from its own
+    # function_source, not from a fixed schema -- proves the generic
+    # resolve_slots mechanism works end to end through the real engine.
+    graph = _load("code_node.json")
+
+    run_result = run_graph(graph)
+
+    assert run_result.result == {"n3": "HELLO!"}

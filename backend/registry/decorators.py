@@ -9,6 +9,7 @@ from backend.registry.base import (
     NodeDefinition,
     NodeRegistry,
     OutputSlotSpec,
+    ResolveSlots,
     default_registry,
 )
 
@@ -19,6 +20,7 @@ def register_node(
     outputs: list[OutputSlotSpec],
     config_model: type[BaseModel],
     result_slot: str | None = None,
+    resolve_slots: ResolveSlots | None = None,
     registry: NodeRegistry = default_registry,
 ) -> Callable:
     """Decorator bundling a node type's input/output/config schema and its
@@ -29,6 +31,10 @@ def register_node(
     value the engine should capture into the graph-level result when this
     node executes -- the generic mechanism by which a node type opts into
     being a graph output, without the engine special-casing any type name.
+
+    `resolve_slots`, if set, resolves this type's actual input/output slots
+    per graph instance instead of using the fixed `inputs`/`outputs` above --
+    for node types whose schema depends on their own config (e.g. `code`).
     """
 
     def decorator(execute_fn: Callable) -> Callable:
@@ -40,6 +46,7 @@ def register_node(
                 config_model=config_model,
                 execute=execute_fn,
                 result_slot=result_slot,
+                resolve_slots=resolve_slots,
             )
         )
         return execute_fn
