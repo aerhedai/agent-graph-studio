@@ -6,8 +6,10 @@ no changes needed to registry/, validation/, or execution/.
 """
 
 from backend.nodes import (  # noqa: F401
+    code,
     conditional_branch,
     llm_call,
     text_input,
     text_output,
+    uppercase_text,
 )

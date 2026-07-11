@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-import backend.llm.client as llm_client_module
+import backend.llm.anthropic_client as anthropic_client_module
 from backend.cli.main import main
 from backend.llm.client import LLMResponse
 from conftest import FIXTURES_DIR
@@ -17,11 +17,10 @@ class _FakeAnthropicLLMClient:
 
 
 def test_cli_runs_valid_graph_and_prints_trace(capsys, monkeypatch):
-    # run_graph() lazily does `from backend.llm.client import AnthropicLLMClient`
-    # only when a graph has an llm_call node and no client was injected -- patch
-    # the module attribute so that lazy import picks up the fake, keeping this
-    # test fully offline.
-    monkeypatch.setattr(llm_client_module, "AnthropicLLMClient", _FakeAnthropicLLMClient)
+    # llm_call's execute() dispatches through backend.llm.providers, which does a
+    # fresh `backend.llm.anthropic_client.AnthropicLLMClient` lookup at call time --
+    # patch the module attribute so the fake is picked up, keeping this test offline.
+    monkeypatch.setattr(anthropic_client_module, "AnthropicLLMClient", _FakeAnthropicLLMClient)
 
     exit_code = main([str(FIXTURES_DIR / "valid_linear.json")])
 

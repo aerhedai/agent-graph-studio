@@ -10,7 +10,7 @@ from backend.schema.models import NodeSpec
 
 def _ctx(condition: str, value: str) -> ExecutionContext:
     node = NodeSpec(id="n1", type="conditional_branch", config={"condition": condition})
-    return ExecutionContext(node=node, inputs={"value": value}, llm_client=None)
+    return ExecutionContext(node=node, inputs={"value": value})
 
 
 def test_contains_true_branch_fires():

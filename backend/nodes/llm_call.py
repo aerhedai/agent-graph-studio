@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from backend.execution.errors import NodeExecutionError
@@ -11,9 +13,11 @@ from backend.schema.types import TEXT
 
 
 class LLMCallConfig(BaseModel):
+    provider: str = "anthropic"
     model: str
     system_prompt: str = ""
     max_tokens: int = Field(gt=0)
+    provider_options: dict[str, Any] = Field(default_factory=dict)
 
 
 @register_node(
@@ -24,10 +28,16 @@ class LLMCallConfig(BaseModel):
 )
 def execute_llm_call(ctx: ExecutionContext) -> NodeResult:
     config = LLMCallConfig.model_validate(ctx.node.config)
-    if ctx.llm_client is None:
-        raise NodeExecutionError("llm_call node requires an LLM client but none was provided")
     try:
-        response = ctx.llm_client.complete(
+        client = ctx.resources.get("llm_client")
+        if client is None:
+            # Dispatch to the right provider client lives entirely in
+            # backend/llm/providers.py -- this node (and the engine) never
+            # branches on config.provider itself.
+            from backend.llm.providers import build_client
+
+            client = build_client(config.provider, config.provider_options)
+        response = client.complete(
             model=config.model,
             system_prompt=config.system_prompt,
             prompt=ctx.inputs["prompt"],

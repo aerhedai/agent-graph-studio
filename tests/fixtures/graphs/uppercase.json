@@ -1,0 +1,12 @@
+{
+  "version": "0.1",
+  "nodes": [
+    { "id": "n1", "type": "text_input", "config": { "value": "hello world" } },
+    { "id": "n2", "type": "uppercase_text", "config": {} },
+    { "id": "n3", "type": "text_output", "config": {} }
+  ],
+  "edges": [
+    { "from": { "node": "n1", "slot": "text" }, "to": { "node": "n2", "slot": "text" } },
+    { "from": { "node": "n2", "slot": "text" }, "to": { "node": "n3", "slot": "text" } }
+  ]
+}

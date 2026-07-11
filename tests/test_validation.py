@@ -125,3 +125,55 @@ def test_no_false_positive_type_mismatch_on_real_mvp_graphs():
     for fixture in ("valid_linear.json", "valid_branching.json"):
         graph = _load(fixture)
         validate_graph(graph)  # should not raise
+
+
+def test_code_node_dynamic_schema_passes_validation():
+    graph = _load("code_node.json")
+    validate_graph(graph)  # should not raise
+
+
+def test_code_node_malformed_source_rejected_once_not_double_reported():
+    # A malformed function_source can't be resolved into an input schema by
+    # resolve_slots (it returns None), which must make check_required_inputs
+    # and check_type_mismatches skip the node rather than pile on a second,
+    # less-actionable issue on top of the real invalid_config one.
+    graph = _load("code_node.json")
+    graph.nodes[1].config["function_source"] = "not python("
+
+    with pytest.raises(GraphValidationError) as exc_info:
+        validate_graph(graph)
+
+    rules = [i.rule for i in exc_info.value.issues]
+    assert rules.count("invalid_config") == 1
+    assert "missing_required_input" not in rules
+    assert "type_mismatch" not in rules
+
+
+def test_provider_swap_needs_no_schema_redesign():
+    # spec-002 §5: the same graph JSON format supports both provider:
+    # "anthropic" and provider: "ollama" on otherwise-identical llm_call
+    # nodes, with no schema changes required between them.
+    graph = parse_graph_json(
+        """
+        {
+          "version": "0.1",
+          "nodes": [
+            {"id": "in", "type": "text_input", "config": {"value": "hi"}},
+            {"id": "anthropic_call", "type": "llm_call",
+             "config": {"provider": "anthropic", "model": "claude-opus-4-8", "max_tokens": 50}},
+            {"id": "ollama_call", "type": "llm_call",
+             "config": {"provider": "ollama", "model": "llama3.2", "max_tokens": 50}},
+            {"id": "out1", "type": "text_output", "config": {}},
+            {"id": "out2", "type": "text_output", "config": {}}
+          ],
+          "edges": [
+            {"from": {"node": "in", "slot": "text"}, "to": {"node": "anthropic_call", "slot": "prompt"}},
+            {"from": {"node": "in", "slot": "text"}, "to": {"node": "ollama_call", "slot": "prompt"}},
+            {"from": {"node": "anthropic_call", "slot": "response"}, "to": {"node": "out1", "slot": "text"}},
+            {"from": {"node": "ollama_call", "slot": "response"}, "to": {"node": "out2", "slot": "text"}}
+          ]
+        }
+        """
+    )
+
+    validate_graph(graph)  # should not raise

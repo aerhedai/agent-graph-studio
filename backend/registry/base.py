@@ -5,6 +5,7 @@ from typing import Any, Callable
 
 from pydantic import BaseModel
 
+from backend.schema.models import NodeSpec
 from backend.schema.types import SlotTypeSpec
 
 
@@ -21,6 +22,9 @@ class OutputSlotSpec:
     type: SlotTypeSpec
 
 
+ResolveSlots = Callable[[NodeSpec], "tuple[list[InputSlotSpec], list[OutputSlotSpec]] | None"]
+
+
 @dataclass(frozen=True)
 class NodeDefinition:
     type_name: str
@@ -28,6 +32,34 @@ class NodeDefinition:
     outputs: list[OutputSlotSpec]
     config_model: type[BaseModel]
     execute: Callable[..., Any]
+    result_slot: str | None = None
+    resolve_slots: ResolveSlots | None = None
+    """Optional per-instance schema resolver, for node types whose actual
+    input/output slots vary per graph instance (e.g. `code`, whose ports
+    depend on each node's own function_source) rather than being fixed for
+    the whole type. When set, `inputs`/`outputs` above are ignored in favor
+    of calling this with the node; callers should go through
+    `effective_inputs`/`effective_outputs` rather than reading `.inputs`/
+    `.outputs` directly. Every other (static-schema) node type leaves this
+    None and is completely unaffected."""
+
+
+def effective_inputs(definition: NodeDefinition, node: NodeSpec) -> list[InputSlotSpec] | None:
+    """Static `.inputs` for ordinary node types; for dynamic-schema types,
+    calls `resolve_slots` and returns None if it couldn't resolve one (e.g.
+    malformed config) -- callers should skip the node in that case and let
+    config-schema validation report the real error."""
+    if definition.resolve_slots is None:
+        return definition.inputs
+    resolved = definition.resolve_slots(node)
+    return resolved[0] if resolved is not None else None
+
+
+def effective_outputs(definition: NodeDefinition, node: NodeSpec) -> list[OutputSlotSpec] | None:
+    if definition.resolve_slots is None:
+        return definition.outputs
+    resolved = definition.resolve_slots(node)
+    return resolved[1] if resolved is not None else None
 
 
 class NodeRegistry:
@@ -45,6 +77,15 @@ class NodeRegistry:
     def register(self, definition: NodeDefinition) -> None:
         if definition.type_name in self._defs:
             raise ValueError(f"Duplicate node type registration: {definition.type_name}")
+        if (
+            definition.result_slot is not None
+            and definition.resolve_slots is None
+            and not any(slot.name == definition.result_slot for slot in definition.inputs)
+        ):
+            raise ValueError(
+                f"'{definition.type_name}' declares result_slot="
+                f"'{definition.result_slot}' but has no matching input slot"
+            )
         self._defs[definition.type_name] = definition
 
     def get(self, type_name: str) -> NodeDefinition | None:

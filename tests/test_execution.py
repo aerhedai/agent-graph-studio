@@ -15,7 +15,7 @@ def test_linear_graph_executes_and_returns_llm_response():
     graph = _load("valid_linear.json")
     client = FakeLLMClient(response=LLMResponse(text="mocked reply", input_tokens=12, output_tokens=8))
 
-    run_result = run_graph(graph, llm_client=client)
+    run_result = run_graph(graph, resources={"llm_client": client})
 
     assert run_result.result == {"n3": "mocked reply"}
     llm_trace = next(t for t in run_result.trace if t.node_id == "n2")
@@ -53,7 +53,7 @@ def test_every_node_execution_produces_complete_trace_record():
     graph = _load("valid_linear.json")
     client = FakeLLMClient(response=LLMResponse(text="hi", input_tokens=1, output_tokens=2))
 
-    run_result = run_graph(graph, llm_client=client)
+    run_result = run_graph(graph, resources={"llm_client": client})
 
     assert len(run_result.trace) == 3
     for record in run_result.trace:
@@ -67,3 +67,24 @@ def test_every_node_execution_produces_complete_trace_record():
     llm_trace = next(t for t in run_result.trace if t.node_type == "llm_call")
     assert llm_trace.token_cost.input_tokens == 1
     assert llm_trace.token_cost.output_tokens == 2
+
+
+def test_uppercase_text_node_runs_through_the_engine_untouched():
+    # No llm_client/resources needed -- proves a plain text-in/text-out node
+    # type plugs into run_graph() with zero engine changes.
+    graph = _load("uppercase.json")
+
+    run_result = run_graph(graph)
+
+    assert run_result.result == {"n3": "HELLO WORLD"}
+
+
+def test_code_node_dynamic_schema_runs_through_the_engine():
+    # code node's input port ("text") is resolved per-instance from its own
+    # function_source, not from a fixed schema -- proves the generic
+    # resolve_slots mechanism works end to end through the real engine.
+    graph = _load("code_node.json")
+
+    run_result = run_graph(graph)
+
+    assert run_result.result == {"n3": "HELLO!"}
