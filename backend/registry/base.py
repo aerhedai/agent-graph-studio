@@ -28,6 +28,7 @@ class NodeDefinition:
     outputs: list[OutputSlotSpec]
     config_model: type[BaseModel]
     execute: Callable[..., Any]
+    result_slot: str | None = None
 
 
 class NodeRegistry:
@@ -45,6 +46,13 @@ class NodeRegistry:
     def register(self, definition: NodeDefinition) -> None:
         if definition.type_name in self._defs:
             raise ValueError(f"Duplicate node type registration: {definition.type_name}")
+        if definition.result_slot is not None and not any(
+            slot.name == definition.result_slot for slot in definition.inputs
+        ):
+            raise ValueError(
+                f"'{definition.type_name}' declares result_slot="
+                f"'{definition.result_slot}' but has no matching input slot"
+            )
         self._defs[definition.type_name] = definition
 
     def get(self, type_name: str) -> NodeDefinition | None:

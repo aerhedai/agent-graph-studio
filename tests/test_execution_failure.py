@@ -15,7 +15,7 @@ def test_node_failure_captured_in_trace_and_downstream_skipped():
     graph = _load("valid_linear.json")
     client = FailingLLMClient(RuntimeError("simulated failure"))
 
-    run_result = run_graph(graph, llm_client=client)
+    run_result = run_graph(graph, resources={"llm_client": client})
 
     llm_trace = next(t for t in run_result.trace if t.node_id == "n2")
     assert llm_trace.error is not None
@@ -55,7 +55,7 @@ def test_independent_branch_continues_after_sibling_failure():
 
     client = FakeLLMClient(on_complete=on_complete)
 
-    run_result = run_graph(graph, llm_client=client)
+    run_result = run_graph(graph, resources={"llm_client": client})
 
     fail_trace = next(t for t in run_result.trace if t.node_id == "fail_call")
     assert fail_trace.error is not None

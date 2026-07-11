@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from backend.execution.trace import TokenCost
-from backend.llm.client import LLMClient
 from backend.schema.models import NodeSpec
 
 
@@ -16,6 +15,12 @@ class NodeResult:
 
 @dataclass
 class ExecutionContext:
+    """`resources` is a generic, caller-populated bag (e.g. {"llm_client": ...})
+    that the engine passes through unchanged to every node -- it has no
+    knowledge of what any given node type needs. Each node's execute() body
+    looks up what it needs by key and falls back to its own default
+    construction if absent."""
+
     node: NodeSpec
     inputs: dict[str, Any]
-    llm_client: LLMClient | None = None
+    resources: dict[str, Any] = field(default_factory=dict)

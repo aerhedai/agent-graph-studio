@@ -6,7 +6,6 @@ from uuid import uuid4
 
 from backend.execution.trace import RunResult, TokenCost, TraceRecord
 from backend.execution.types import ExecutionContext, NodeResult
-from backend.llm.client import LLMClient
 from backend.registry.base import NodeRegistry, default_registry
 from backend.schema.models import GraphSpec
 from backend.schema.topo import kahn_order
@@ -20,10 +19,15 @@ def _utcnow_iso() -> str:
 def run_graph(
     graph: GraphSpec,
     registry: NodeRegistry = default_registry,
-    llm_client: LLMClient | None = None,
+    resources: dict[str, Any] | None = None,
     run_id: str | None = None,
 ) -> RunResult:
     """Execute a validated graph per spec §6.
+
+    `resources` is an opaque, caller-populated bag passed unchanged to every
+    node's ExecutionContext -- the engine has no knowledge of what any node
+    type needs (e.g. an LLM client) or constructs anything on a node type's
+    behalf; each node's execute() resolves its own dependencies.
 
     Any node output slot the node's execute() doesn't return is treated as
     "did not fire" -- this single generic rule handles both
@@ -34,10 +38,7 @@ def run_graph(
     """
     validate_graph(graph, registry)
 
-    if llm_client is None and any(n.type == "llm_call" for n in graph.nodes):
-        from backend.llm.client import AnthropicLLMClient
-
-        llm_client = AnthropicLLMClient()
+    resources = resources or {}
 
     node_ids = [n.id for n in graph.nodes]
     order, _ = kahn_order(node_ids, graph.edges)
@@ -66,7 +67,7 @@ def run_graph(
             continue
 
         started_at = _utcnow_iso()
-        ctx = ExecutionContext(node=node, inputs=gathered_inputs, llm_client=llm_client)
+        ctx = ExecutionContext(node=node, inputs=gathered_inputs, resources=resources)
         try:
             node_result: NodeResult = definition.execute(ctx)
             finished_at = _utcnow_iso()
@@ -85,8 +86,8 @@ def run_graph(
                     error=None,
                 )
             )
-            if node.type == "text_output":
-                result[node_id] = gathered_inputs["text"]
+            if definition.result_slot is not None:
+                result[node_id] = gathered_inputs[definition.result_slot]
         except Exception as e:
             finished_at = _utcnow_iso()
             trace.append(

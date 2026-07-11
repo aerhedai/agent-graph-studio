@@ -24,10 +24,17 @@ class LLMCallConfig(BaseModel):
 )
 def execute_llm_call(ctx: ExecutionContext) -> NodeResult:
     config = LLMCallConfig.model_validate(ctx.node.config)
-    if ctx.llm_client is None:
-        raise NodeExecutionError("llm_call node requires an LLM client but none was provided")
     try:
-        response = ctx.llm_client.complete(
+        client = ctx.resources.get("llm_client")
+        if client is None:
+            # Local import (not module-level): keeps `anthropic` out of this
+            # module's import graph unless an llm_call node actually runs
+            # without an injected client, and lets tests monkeypatch the
+            # class on backend.llm.client at call time.
+            from backend.llm.client import AnthropicLLMClient
+
+            client = AnthropicLLMClient()
+        response = client.complete(
             model=config.model,
             system_prompt=config.system_prompt,
             prompt=ctx.inputs["prompt"],

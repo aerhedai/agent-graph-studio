@@ -16,9 +16,10 @@ class LLMClient(Protocol):
 
 
 class AnthropicLLMClient:
-    """Talks to the real Claude API. Constructed lazily by the engine -- only
-    when a graph actually contains an llm_call node and no client was
-    injected -- so graphs without llm_call nodes never require ANTHROPIC_API_KEY."""
+    """Talks to the real Claude API. Constructed lazily by llm_call's own
+    execute() -- only when that node actually runs and no client was
+    injected via ExecutionContext.resources -- so graphs without llm_call
+    nodes (or tests injecting a fake) never require ANTHROPIC_API_KEY."""
 
     def __init__(self) -> None:
         import anthropic

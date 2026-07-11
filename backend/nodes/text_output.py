@@ -17,6 +17,7 @@ class TextOutputConfig(BaseModel):
     inputs=[InputSlotSpec("text", TEXT)],
     outputs=[],
     config_model=TextOutputConfig,
+    result_slot="text",
 )
 def execute_text_output(ctx: ExecutionContext) -> NodeResult:
     TextOutputConfig.model_validate(ctx.node.config)

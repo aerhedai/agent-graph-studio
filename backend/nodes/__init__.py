@@ -10,4 +10,5 @@ from backend.nodes import (  # noqa: F401
     llm_call,
     text_input,
     text_output,
+    uppercase_text,
 )
