@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel
+
+from backend.execution.trace import TraceRecord
+
+
+class SlotInfo(BaseModel):
+    name: str
+    type: dict[str, Any]
+    required: bool = True
+
+
+class NodeTypeInfo(BaseModel):
+    type: str
+    config_schema: dict[str, Any]
+    dynamic_schema: bool
+    """True for node types whose actual ports depend on per-instance config
+    (code, mcp_call, fan_out, merge -- SPEC-002's resolve_slots) rather than
+    being fixed for the whole type. `inputs`/`outputs` are empty when this is
+    true; call POST /node-types/{type}/resolve-slots with a real config to
+    get the actual ports."""
+    inputs: list[SlotInfo]
+    outputs: list[SlotInfo]
+
+
+class ResolveSlotsRequest(BaseModel):
+    config: dict[str, Any] = {}
+
+
+class ResolveSlotsResponse(BaseModel):
+    inputs: list[SlotInfo]
+    outputs: list[SlotInfo]
+
+
+class RunSubmitResponse(BaseModel):
+    run_id: str
+    status: str
+
+
+class RunStatusResponse(BaseModel):
+    run_id: str
+    status: str  # "running" | "completed" | "failed"
+    running_node_ids: list[str]
+    trace: list[TraceRecord]
+    result: dict[str, Any] | None
+    error: str | None
