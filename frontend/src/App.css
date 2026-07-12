@@ -61,6 +61,12 @@
   cursor: default;
 }
 
+.run-bar button.run-bar__secondary {
+  background: var(--bg);
+  color: var(--text);
+  border-color: var(--border);
+}
+
 .run-bar__status {
   font-size: 12px;
   font-weight: 600;

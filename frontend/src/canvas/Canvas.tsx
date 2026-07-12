@@ -15,9 +15,9 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { pollRun, submitRun } from "../api/client";
-import type { NodeTypeInfo, RunStatusResponse } from "../api/types";
-import { nodesAndEdgesToGraphSpec } from "../graph/serialize";
+import { fetchNodeTypes, pollRun, submitRun } from "../api/client";
+import type { GraphSpec, NodeTypeInfo, RunStatusResponse } from "../api/types";
+import { graphSpecToNodesAndEdges, nodesAndEdgesToGraphSpec } from "../graph/serialize";
 import { NodeInspectorPanel } from "../panels/NodeInspectorPanel";
 import { GenericNode, type GenericFlowNode, type GenericNodeData, type NodeStatus } from "./GenericNode";
 import { Palette } from "./Palette";
@@ -40,6 +40,16 @@ function statusForNode(nodeId: string, run: RunStatusResponse | null): NodeStatu
   return "pending";
 }
 
+function downloadJson(data: unknown, filename: string) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 function CanvasInner() {
   const [nodes, setNodes, onNodesChange] = useNodesState<GenericFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -47,9 +57,18 @@ function CanvasInner() {
   const [run, setRun] = useState<RunStatusResponse | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  const [nodeTypesByName, setNodeTypesByName] = useState<Record<string, NodeTypeInfo>>({});
+  const [loadError, setLoadError] = useState<string | null>(null);
   const { screenToFlowPosition } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   const pollTimeoutRef = useRef<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    fetchNodeTypes()
+      .then((types) => setNodeTypesByName(Object.fromEntries(types.map((t) => [t.type, t]))))
+      .catch((e: unknown) => setLoadError(String(e)));
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -156,6 +175,37 @@ function CanvasInner() {
     }
   }
 
+  // --- save / load (spec-005 §4/§6: canvas <-> the exact CLI graph JSON) --
+  function handleSave() {
+    const graph = nodesAndEdgesToGraphSpec(nodes, edges);
+    downloadJson(graph, "graph.json");
+  }
+
+  async function handleLoadFile(file: File) {
+    setLoadError(null);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as GraphSpec;
+      const { nodes: loadedNodes, edges: loadedEdges } = await graphSpecToNodesAndEdges(
+        parsed,
+        nodeTypesByName,
+      );
+      setNodes(loadedNodes);
+      setEdges(loadedEdges);
+      setSelectedNodeId(null);
+      setRun(null);
+      setRunError(null);
+      if (pollTimeoutRef.current !== null) window.clearTimeout(pollTimeoutRef.current);
+      // Give freshly-loaded dynamic-schema nodes' handles (resolved above,
+      // present from their very first render) a measurement pass too --
+      // cheap, and removes any residual risk of the Phase 2 stale-handle
+      // issue recurring for a load-then-immediately-connect-more flow.
+      window.setTimeout(() => loadedNodes.forEach((n) => updateNodeInternals(n.id)), 0);
+    } catch (e) {
+      setLoadError(String(e));
+    }
+  }
+
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null;
   const selectedTraceRecord = run?.trace.find((t) => t.node_id === selectedNodeId) ?? null;
 
@@ -167,8 +217,30 @@ function CanvasInner() {
           <button type="button" onClick={() => void handleRun()} disabled={isSubmitting || run?.status === "running"}>
             {run?.status === "running" ? "Running..." : "Run"}
           </button>
+          <button type="button" onClick={handleSave} className="run-bar__secondary">
+            Save
+          </button>
+          <button
+            type="button"
+            className="run-bar__secondary"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            Load
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="application/json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) void handleLoadFile(file);
+              e.target.value = "";
+            }}
+          />
           {run && <span className={`run-bar__status status-${run.status}`}>{run.status}</span>}
           {runError && <span className="run-bar__error">{runError}</span>}
+          {loadError && <span className="run-bar__error">{loadError}</span>}
         </div>
         <div className="canvas-wrapper" onDrop={onDrop} onDragOver={onDragOver}>
           <ReactFlow
