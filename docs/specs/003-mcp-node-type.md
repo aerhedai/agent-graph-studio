@@ -36,14 +36,20 @@ The `code` node's `resolve_slots` works because the function signature is availa
 ## 5. Data model
 
 ### `mcp_call` config
+
+Confirmed via local testing: reference MCP servers (e.g. `@modelcontextprotocol/server-filesystem`) communicate over **stdio**, not HTTP — the server is launched as a subprocess, not connected to via URL. Config reflects that:
+
 ```json
 {
-  "server_url": "string",
+  "command": "string, e.g. \"npx\"",
+  "args": ["list", "of", "strings", "e.g. [\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/path/to/sandbox\"]"],
   "tool_name": "string",
-  "credential_ref": "string, key into resources dict, following llm_client's pattern",
+  "credential_ref": "string, key into resources dict, following llm_client's pattern -- optional, only needed for servers requiring auth",
   "require_approval": true
 }
 ```
+
+Note: this targets **local, stdio-based MCP servers only** for this spec's MVP. A remote server (e.g. one running on a separate machine, reached over HTTP/SSE, relevant for an eventual PC-hosted setup) is a deliberate future extension — different transport, likely a distinct config shape or a `transport: "stdio" | "http"` discriminator. Not solved here; smallest thing that works for what's actually running today.
 
 ### Node behavior
 - Inputs/outputs: dynamic, derived from the named tool's schema on the configured server (mirrors `code`'s `resolve_slots` pattern, but resolved via a network call instead of local parsing — see §4)
@@ -51,7 +57,7 @@ The `code` node's `resolve_slots` works because the function signature is availa
 
 ## 6. Acceptance criteria
 
-- [ ] `mcp_call` node connects to a real MCP server and successfully invokes a read-only tool (e.g. a filesystem-read or similar low-risk tool), live-verified, non-mocked
+- [ ] `mcp_call` node launches a real local MCP server as a subprocess (confirmed working: `npx -y @modelcontextprotocol/server-filesystem <sandbox-dir>`) and successfully invokes a read-only tool (e.g. reading a known test file from the sandbox), live-verified, non-mocked
 - [ ] Tool schema discovery correctly produces per-instance input/output slots without requiring `engine.py` changes (should reuse `resolve_slots`, or prove why it can't)
 - [ ] A write/mutating tool call pauses for approval and does not execute until confirmed
 - [ ] Credential handling follows the `resources`-bag pattern established in SPEC-002 — no credentials hardcoded or committed
