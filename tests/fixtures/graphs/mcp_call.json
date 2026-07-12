@@ -1,0 +1,21 @@
+{
+  "version": "0.1",
+  "nodes": [
+    { "id": "n1", "type": "text_input", "config": { "value": "/tmp/sandbox/sample.txt" } },
+    {
+      "id": "n2",
+      "type": "mcp_call",
+      "config": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/sandbox"],
+        "tool_name": "read_text_file",
+        "require_approval": false
+      }
+    },
+    { "id": "n3", "type": "text_output", "config": {} }
+  ],
+  "edges": [
+    { "from": { "node": "n1", "slot": "text" }, "to": { "node": "n2", "slot": "path" } },
+    { "from": { "node": "n2", "slot": "result" }, "to": { "node": "n3", "slot": "text" } }
+  ]
+}

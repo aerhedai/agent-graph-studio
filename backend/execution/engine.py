@@ -83,6 +83,7 @@ def run_graph(
                     inputs=gathered_inputs,
                     outputs=node_result.outputs,
                     token_cost=node_result.token_cost,
+                    side_effect=node_result.side_effect,
                     error=None,
                 )
             )

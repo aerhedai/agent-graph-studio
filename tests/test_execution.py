@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import backend.mcp.client as mcp_client_module
 from backend.execution.engine import run_graph
 from backend.llm.client import LLMResponse
+from backend.mcp.client import McpToolInfo
 from backend.schema.loader import parse_graph_json
 from conftest import load_fixture_text
 from fakes import FakeLLMClient
@@ -88,3 +90,28 @@ def test_code_node_dynamic_schema_runs_through_the_engine():
     run_result = run_graph(graph)
 
     assert run_result.result == {"n3": "HELLO!"}
+
+
+def test_mcp_call_node_runs_through_the_engine(monkeypatch):
+    # mcp_call's "path" port is resolved per-instance from the (mocked)
+    # server's real tool schema -- proves resolve_slots + the side_effect
+    # trace field work end to end through the real engine, with zero
+    # engine.py node-type-specific branching.
+    tool = McpToolInfo(
+        name="read_text_file", param_names=["path"], param_json_types={"path": "string"}
+    )
+    monkeypatch.setattr(mcp_client_module, "list_tools", lambda command, args: [tool])
+    monkeypatch.setattr(
+        mcp_client_module,
+        "call_tool",
+        lambda command, args, tool_name, arguments, env=None: "hello from a test file",
+    )
+
+    graph = _load("mcp_call.json")
+
+    run_result = run_graph(graph)
+
+    assert run_result.result == {"n3": "hello from a test file"}
+    mcp_trace = next(t for t in run_result.trace if t.node_id == "n2")
+    assert mcp_trace.side_effect is True
+    assert mcp_trace.error is None
