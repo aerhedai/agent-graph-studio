@@ -14,14 +14,17 @@ import {
   type IsValidConnection,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useCallback, useState } from "react";
-import type { NodeTypeInfo } from "../api/types";
-import { ConfigPanel } from "../panels/ConfigPanel";
-import { GenericNode, type GenericFlowNode, type GenericNodeData } from "./GenericNode";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { pollRun, submitRun } from "../api/client";
+import type { NodeTypeInfo, RunStatusResponse } from "../api/types";
+import { nodesAndEdgesToGraphSpec } from "../graph/serialize";
+import { NodeInspectorPanel } from "../panels/NodeInspectorPanel";
+import { GenericNode, type GenericFlowNode, type GenericNodeData, type NodeStatus } from "./GenericNode";
 import { Palette } from "./Palette";
 import { slotTypesCompatible } from "./typeCompat";
 
 const nodeTypes = { generic: GenericNode };
+const POLL_INTERVAL_MS = 500;
 
 let idCounter = 0;
 function nextNodeId(typeName: string): string {
@@ -29,12 +32,30 @@ function nextNodeId(typeName: string): string {
   return `${typeName}_${idCounter}`;
 }
 
+function statusForNode(nodeId: string, run: RunStatusResponse | null): NodeStatus {
+  if (!run) return "pending";
+  const record = run.trace.find((t) => t.node_id === nodeId);
+  if (record) return record.error ? "error" : "success";
+  if (run.running_node_ids.includes(nodeId)) return "running";
+  return "pending";
+}
+
 function CanvasInner() {
   const [nodes, setNodes, onNodesChange] = useNodesState<GenericFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [run, setRun] = useState<RunStatusResponse | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
   const { screenToFlowPosition } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
+  const pollTimeoutRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pollTimeoutRef.current !== null) window.clearTimeout(pollTimeoutRef.current);
+    };
+  }, []);
 
   const onDrop = useCallback(
     (event: React.DragEvent) => {
@@ -94,31 +115,84 @@ function CanvasInner() {
     [setEdges],
   );
 
+  // --- run + live trace polling (spec-005 §4/§6) -----------------------
+  const applyRunToNodes = useCallback(
+    (nextRun: RunStatusResponse) => {
+      setNodes((nds) =>
+        nds.map((n) => ({ ...n, data: { ...n.data, status: statusForNode(n.id, nextRun) } })),
+      );
+    },
+    [setNodes],
+  );
+
+  const pollUntilDone = useCallback(
+    (runId: string) => {
+      pollRun(runId)
+        .then((status) => {
+          setRun(status);
+          applyRunToNodes(status);
+          if (status.status === "running") {
+            pollTimeoutRef.current = window.setTimeout(() => pollUntilDone(runId), POLL_INTERVAL_MS);
+          }
+        })
+        .catch((e: unknown) => setRunError(String(e)));
+    },
+    [applyRunToNodes],
+  );
+
+  async function handleRun() {
+    setIsSubmitting(true);
+    setRunError(null);
+    setRun(null);
+    setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, status: "pending" } })));
+    try {
+      const graph = nodesAndEdgesToGraphSpec(nodes, edges);
+      const submitted = await submitRun(graph);
+      pollUntilDone(submitted.run_id);
+    } catch (e) {
+      setRunError(String(e));
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null;
+  const selectedTraceRecord = run?.trace.find((t) => t.node_id === selectedNodeId) ?? null;
 
   return (
     <div className="app-layout">
       <Palette />
-      <div className="canvas-wrapper" onDrop={onDrop} onDragOver={onDragOver}>
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={nodeTypes}
-          onNodesChange={onNodesChange}
-          onEdgesChange={onEdgesChange}
-          onConnect={onConnect}
-          isValidConnection={isValidConnection}
-          onNodeClick={(_, node) => setSelectedNodeId(node.id)}
-          onPaneClick={() => setSelectedNodeId(null)}
-          defaultViewport={{ x: 0, y: 0, zoom: 1 }}
-        >
-          <Background />
-          <Controls />
-          <MiniMap />
-        </ReactFlow>
+      <div className="canvas-column">
+        <div className="run-bar">
+          <button type="button" onClick={() => void handleRun()} disabled={isSubmitting || run?.status === "running"}>
+            {run?.status === "running" ? "Running..." : "Run"}
+          </button>
+          {run && <span className={`run-bar__status status-${run.status}`}>{run.status}</span>}
+          {runError && <span className="run-bar__error">{runError}</span>}
+        </div>
+        <div className="canvas-wrapper" onDrop={onDrop} onDragOver={onDragOver}>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
+            onConnect={onConnect}
+            isValidConnection={isValidConnection}
+            onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+            onPaneClick={() => setSelectedNodeId(null)}
+            defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+          >
+            <Background />
+            <Controls />
+            <MiniMap />
+          </ReactFlow>
+        </div>
       </div>
-      <ConfigPanel
+      <NodeInspectorPanel
         node={selectedNode}
+        traceRecord={selectedTraceRecord}
+        hasRun={run !== null}
         onConfigChange={(nodeId, config, inputs, outputs) => {
           setNodes((nds) =>
             nds.map((n) =>

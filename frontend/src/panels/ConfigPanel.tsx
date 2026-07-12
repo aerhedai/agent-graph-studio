@@ -6,7 +6,7 @@ import type { JsonSchemaProperty, SlotInfo } from "../api/types";
 import type { GenericFlowNode } from "../canvas/GenericNode";
 
 interface ConfigPanelProps {
-  node: GenericFlowNode | null;
+  node: GenericFlowNode;
   onConfigChange: (
     nodeId: string,
     config: Record<string, unknown>,
@@ -26,17 +26,9 @@ export function ConfigPanel({ node, onConfigChange }: ConfigPanelProps) {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    setDraft(node?.data.config ?? {});
+    setDraft(node.data.config ?? {});
     setError(null);
-  }, [node?.id]);
-
-  if (!node) {
-    return (
-      <aside className="config-panel config-panel--empty">
-        <p>Select a node to edit its configuration.</p>
-      </aside>
-    );
-  }
+  }, [node.id]);
 
   const properties = node.data.configSchema.properties ?? {};
 
@@ -67,27 +59,24 @@ export function ConfigPanel({ node, onConfigChange }: ConfigPanelProps) {
   }
 
   return (
-    <aside className="config-panel">
-      <h2>{node.data.nodeType}</h2>
-      <p className="config-panel__id">{node.id}</p>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          void handleSave();
-        }}
-      >
-        {Object.entries(properties).map(([name, propSchema]) => (
-          <div key={name} className="config-panel__field">
-            <label htmlFor={`field-${name}`}>{propSchema.title ?? name}</label>
-            {renderField(name, propSchema, draft[name], setField)}
-          </div>
-        ))}
-        {error && <div className="config-panel__error">{error}</div>}
-        <button type="submit" disabled={saving}>
-          {saving ? "Resolving..." : "Save"}
-        </button>
-      </form>
-    </aside>
+    <form
+      className="config-panel"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void handleSave();
+      }}
+    >
+      {Object.entries(properties).map(([name, propSchema]) => (
+        <div key={name} className="config-panel__field">
+          <label htmlFor={`field-${name}`}>{propSchema.title ?? name}</label>
+          {renderField(name, propSchema, draft[name], setField)}
+        </div>
+      ))}
+      {error && <div className="config-panel__error">{error}</div>}
+      <button type="submit" disabled={saving}>
+        {saving ? "Resolving..." : "Save"}
+      </button>
+    </form>
   );
 }
 
