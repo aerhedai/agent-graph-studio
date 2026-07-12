@@ -11,6 +11,11 @@ from backend.schema.models import NodeSpec
 class NodeResult:
     outputs: dict[str, Any] = field(default_factory=dict)
     token_cost: TokenCost = field(default_factory=TokenCost)
+    side_effect: bool = False
+    """Whether this execution had a confirmed external side effect (e.g. an
+    mcp_call write). False for nodes that don't touch anything outside the
+    graph. Flows into TraceRecord.side_effect, mirroring how token_cost
+    flows -- spec-003 §3's "external side effect occurred: yes/no"."""
 
 
 @dataclass

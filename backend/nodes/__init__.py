@@ -9,6 +9,7 @@ from backend.nodes import (  # noqa: F401
     code,
     conditional_branch,
     llm_call,
+    mcp_call,
     text_input,
     text_output,
     uppercase_text,

@@ -19,6 +19,7 @@ class TraceRecord(BaseModel):
     inputs: dict[str, Any]
     outputs: dict[str, Any]
     token_cost: TokenCost = Field(default_factory=TokenCost)
+    side_effect: bool = False
     error: str | None = None
 
 
