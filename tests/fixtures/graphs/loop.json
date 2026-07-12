@@ -1,0 +1,30 @@
+{
+  "version": "0.1",
+  "nodes": [
+    { "id": "n1", "type": "text_input", "config": { "value": "a" } },
+    {
+      "id": "n2",
+      "type": "loop",
+      "config": {
+        "max_iterations": 3,
+        "sub_graph": {
+          "version": "0.1",
+          "nodes": [
+            { "id": "entry", "type": "text_input", "config": { "value": "" } },
+            { "id": "step", "type": "code", "config": { "function_source": "def add_bang(text):\n    return text + '!'\n" } },
+            { "id": "out", "type": "text_output", "config": {} }
+          ],
+          "edges": [
+            { "from": { "node": "entry", "slot": "text" }, "to": { "node": "step", "slot": "text" } },
+            { "from": { "node": "step", "slot": "result" }, "to": { "node": "out", "slot": "text" } }
+          ]
+        }
+      }
+    },
+    { "id": "n3", "type": "text_output", "config": {} }
+  ],
+  "edges": [
+    { "from": { "node": "n1", "slot": "text" }, "to": { "node": "n2", "slot": "value" } },
+    { "from": { "node": "n2", "slot": "value" }, "to": { "node": "n3", "slot": "text" } }
+  ]
+}
