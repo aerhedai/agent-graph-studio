@@ -1,0 +1,19 @@
+{
+  "version": "0.1",
+  "nodes": [
+    { "id": "n1", "type": "text_input", "config": { "value": "hi" } },
+    { "id": "n2", "type": "fan_out", "config": { "worker_count": 2 } },
+    { "id": "n3", "type": "code", "config": { "function_source": "def upper(text):\n    return text.upper()\n" } },
+    { "id": "n4", "type": "code", "config": { "function_source": "def rev(text):\n    return text[::-1]\n" } },
+    { "id": "n5", "type": "merge", "config": { "expected_input_count": 2 } },
+    { "id": "n6", "type": "text_output", "config": {} }
+  ],
+  "edges": [
+    { "from": { "node": "n1", "slot": "text" }, "to": { "node": "n2", "slot": "value" } },
+    { "from": { "node": "n2", "slot": "branch_1" }, "to": { "node": "n3", "slot": "text" } },
+    { "from": { "node": "n2", "slot": "branch_2" }, "to": { "node": "n4", "slot": "text" } },
+    { "from": { "node": "n3", "slot": "result" }, "to": { "node": "n5", "slot": "input_1" } },
+    { "from": { "node": "n4", "slot": "result" }, "to": { "node": "n5", "slot": "input_2" } },
+    { "from": { "node": "n5", "slot": "result" }, "to": { "node": "n6", "slot": "text" } }
+  ]
+}

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import backend.mcp.client as mcp_client_module
 from backend.execution.engine import run_graph
 from backend.llm.client import LLMResponse
@@ -115,3 +117,32 @@ def test_mcp_call_node_runs_through_the_engine(monkeypatch):
     mcp_trace = next(t for t in run_result.trace if t.node_id == "n2")
     assert mcp_trace.side_effect is True
     assert mcp_trace.error is None
+
+
+def test_loop_node_runs_through_the_engine():
+    # loop's sub_graph is a genuinely separate nested run_graph() invocation
+    # per iteration -- proves the recursive engine call and child_traces
+    # nesting work end to end through the real (now-async) engine.
+    graph = _load("loop.json")
+
+    run_result = run_graph(graph)
+
+    assert run_result.result == {"n3": "a!!!"}
+    loop_trace = next(t for t in run_result.trace if t.node_id == "n2")
+    assert loop_trace.error is None
+    assert loop_trace.child_traces is not None
+    assert len(loop_trace.child_traces) == 3
+
+
+def test_fanout_merge_runs_through_the_engine():
+    # fan_out's two branches are ordinary sibling nodes reached via ordinary
+    # edges -- proves they run through the real engine's layered scheduler
+    # (concurrently, per test_engine_concurrency.py) and merge combines them
+    # in index order with zero fan_out/merge-specific code in the engine.
+    graph = _load("fanout_merge.json")
+
+    run_result = run_graph(graph)
+
+    assert json.loads(run_result.result["n6"]) == ["HI", "ih"]
+    traced_ids = {t.node_id for t in run_result.trace}
+    assert {"n1", "n2", "n3", "n4", "n5", "n6"} == traced_ids

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from backend.execution.trace import TokenCost
+from backend.execution.trace import TokenCost, TraceRecord
 from backend.schema.models import NodeSpec
 
 
@@ -16,6 +16,10 @@ class NodeResult:
     mcp_call write). False for nodes that don't touch anything outside the
     graph. Flows into TraceRecord.side_effect, mirroring how token_cost
     flows -- spec-003 §3's "external side effect occurred: yes/no"."""
+    child_traces: list[list[TraceRecord]] | None = None
+    """Set only by `loop` (one inner list per iteration's full sub-graph
+    trace). Flows into TraceRecord.child_traces the same way token_cost/
+    side_effect already flow -- spec-004 §4."""
 
 
 @dataclass
