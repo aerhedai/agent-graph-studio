@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from backend.execution.trace import RunResult, TokenCost, TraceRecord
@@ -69,7 +69,12 @@ async def _execute_node(
 
 
 async def _run_graph_async(
-    graph: GraphSpec, registry: NodeRegistry, resources: dict[str, Any], run_id: str
+    graph: GraphSpec,
+    registry: NodeRegistry,
+    resources: dict[str, Any],
+    run_id: str,
+    on_round_start: Callable[[list[str]], None] | None = None,
+    on_trace_record: Callable[[TraceRecord], None] | None = None,
 ) -> RunResult:
     """Layered/wavefront concurrent scheduler (spec-004).
 
@@ -96,6 +101,19 @@ async def _run_graph_async(
     "upstream hasn't run yet" and "upstream ran but didn't fire this slot"
     must be distinguishable mid-run now -- they were never ambiguous when
     everything ran once, in one fixed pass.
+
+    `on_round_start`/`on_trace_record` (spec-005) are optional observers for
+    callers that want incremental progress (the API layer's live per-node
+    status polling) rather than only the final RunResult. `on_round_start`
+    fires once per round with that round's ready node ids, right before they
+    run -- the "running" signal. `on_trace_record` fires once per node
+    immediately after its record is built -- the "success"/"error" signal.
+    Both None by default; every other caller (CLI, `loop`'s recursive call,
+    all pre-spec-005 tests) is unaffected. Caveat: nodes within the same
+    concurrent round still transition together as a batch, since they only
+    become individually available once `asyncio.gather` returns for the
+    whole round -- not a gap in the callback, just inherent to running a
+    round as one `gather` call.
     """
     nodes_by_id = {n.id: n for n in graph.nodes}
     incoming_by_slot = {(e.to.node, e.to.slot): e for e in graph.edges}
@@ -140,6 +158,9 @@ async def _run_graph_async(
             # (cycle-free) graph -- a safety net, not a real code path.
             break
 
+        if on_round_start is not None:
+            on_round_start([node_id for node_id, _ in ready])
+
         round_results = await asyncio.gather(
             *(
                 _execute_node(nodes_by_id[node_id], registry.get(nodes_by_id[node_id].type), gathered, resources, run_id)
@@ -151,6 +172,8 @@ async def _run_graph_async(
             pending.remove(node_id)
             finished.add(node_id)
             trace.append(record)
+            if on_trace_record is not None:
+                on_trace_record(record)
             if node_result is not None:
                 definition = registry.get(nodes_by_id[node_id].type)
                 for out_slot, value in node_result.outputs.items():
@@ -166,6 +189,8 @@ def run_graph(
     registry: NodeRegistry = default_registry,
     resources: dict[str, Any] | None = None,
     run_id: str | None = None,
+    on_round_start: Callable[[list[str]], None] | None = None,
+    on_trace_record: Callable[[TraceRecord], None] | None = None,
 ) -> RunResult:
     """Execute a validated graph, running independent branches concurrently
     (spec-004). Synchronous, unchanged public signature -- internally a thin
@@ -194,4 +219,6 @@ def run_graph(
     validate_graph(graph, registry)
     resources = resources or {}
     run_id = run_id or str(uuid4())
-    return asyncio.run(_run_graph_async(graph, registry, resources, run_id))
+    return asyncio.run(
+        _run_graph_async(graph, registry, resources, run_id, on_round_start, on_trace_record)
+    )
