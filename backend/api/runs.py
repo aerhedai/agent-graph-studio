@@ -58,11 +58,13 @@ def get_run_snapshot(run_id: str) -> RunRecord | None:
     )
 
 
-def execute_run(run_id: str, graph: GraphSpec) -> None:
+def execute_run(run_id: str, graph: GraphSpec, resources: dict[str, Any] | None = None) -> None:
     """The actual background task body -- called by Starlette in a worker
     thread. Wires run_graph()'s progress callbacks (spec-005) into the
     in-memory record so GET /runs/{run_id} can report live status without
-    waiting for the whole run to finish."""
+    waiting for the whole run to finish. `resources` (spec-006) carries the
+    already-resolved named-connection clients, built by the caller (POST
+    /runs) before this task was dispatched."""
     record = _runs[run_id]
 
     def on_round_start(node_ids: list[str]) -> None:
@@ -75,7 +77,10 @@ def execute_run(run_id: str, graph: GraphSpec) -> None:
 
     try:
         result = run_graph(
-            graph, on_round_start=on_round_start, on_trace_record=on_trace_record
+            graph,
+            resources=resources,
+            on_round_start=on_round_start,
+            on_trace_record=on_trace_record,
         )
         record.result = result.result
         record.status = "completed"

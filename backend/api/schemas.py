@@ -47,3 +47,35 @@ class RunStatusResponse(BaseModel):
     trace: list[TraceRecord]
     result: dict[str, Any] | None
     error: str | None
+
+
+class ConnectionTypeInfo(BaseModel):
+    type: str
+    category: str  # "local" | "cloud"
+    config_schema: dict[str, Any]
+
+
+class ConnectionInfo(BaseModel):
+    name: str
+    type: str
+    """Never includes `config` -- secrets (API keys, etc.) stay server-side
+    only and are never returned over the API (spec-006 §5)."""
+
+
+class CreateConnectionRequest(BaseModel):
+    name: str
+    type: str
+    config: dict[str, Any] = {}
+
+
+class TestConnectionRequest(BaseModel):
+    type: str | None = None
+    config: dict[str, Any] | None = None
+    """When both are set, tests that type+config directly without requiring
+    it to already be saved (the canvas's "Test Connection before Save"
+    flow). When omitted, re-tests the already-saved connection by name."""
+
+
+class TestConnectionResponse(BaseModel):
+    success: bool
+    message: str

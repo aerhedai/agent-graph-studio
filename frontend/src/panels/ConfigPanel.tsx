@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { resolveSlots } from "../api/client";
 import type { JsonSchemaProperty, SlotInfo } from "../api/types";
 import type { GenericFlowNode } from "../canvas/GenericNode";
+import { ConnectionPicker } from "./ConnectionPicker";
+import { renderPrimitiveField } from "./fieldRenderers";
 
 interface ConfigPanelProps {
   node: GenericFlowNode;
@@ -80,6 +82,11 @@ export function ConfigPanel({ node, onConfigChange }: ConfigPanelProps) {
   );
 }
 
+// `function_source` and `connection` are the two deliberate per-field-name
+// special cases (spec-005 §7, spec-006 §4): a real multi-line editor and a
+// named-connection picker respectively, instead of a generic single-line
+// input, since both are foreseeable UX problems worth solving directly.
+// Everything else falls through to the shared type-driven renderer.
 function renderField(
   name: string,
   propSchema: JsonSchemaProperty,
@@ -97,61 +104,14 @@ function renderField(
     );
   }
 
-  if (propSchema.type === "boolean") {
+  if (name === "connection") {
     return (
-      <input
-        id={`field-${name}`}
-        type="checkbox"
-        checked={Boolean(value)}
-        onChange={(e) => setField(name, e.target.checked)}
+      <ConnectionPicker
+        value={typeof value === "string" ? value : undefined}
+        onChange={(connectionName) => setField(name, connectionName)}
       />
     );
   }
 
-  if (propSchema.type === "integer" || propSchema.type === "number") {
-    return (
-      <input
-        id={`field-${name}`}
-        type="number"
-        value={typeof value === "number" ? value : ""}
-        onChange={(e) =>
-          setField(name, e.target.value === "" ? undefined : Number(e.target.value))
-        }
-      />
-    );
-  }
-
-  if (propSchema.type === "string") {
-    return (
-      <input
-        id={`field-${name}`}
-        type="text"
-        value={typeof value === "string" ? value : ""}
-        onChange={(e) => setField(name, e.target.value)}
-      />
-    );
-  }
-
-  // object/array/$ref (e.g. loop's nested sub_graph, llm_call's
-  // provider_options) -- raw JSON fallback. A proper nested editor for a
-  // whole sub-graph is explicitly canvas-later scope (spec-005 §3: loop
-  // sub-graphs shown as a single node with a config panel for MVP), and a
-  // flattened/raw view is this project's established MVP convention
-  // elsewhere (spec-005 §7 for nested trace display).
-  const textValue =
-    value === undefined ? "" : typeof value === "string" ? value : JSON.stringify(value, null, 2);
-  return (
-    <textarea
-      id={`field-${name}`}
-      className="config-panel__json-field"
-      defaultValue={textValue}
-      onBlur={(e) => {
-        try {
-          setField(name, JSON.parse(e.target.value));
-        } catch {
-          // leave prior value in place until the text is valid JSON again
-        }
-      }}
-    />
-  );
+  return renderPrimitiveField(name, propSchema, value, setField);
 }

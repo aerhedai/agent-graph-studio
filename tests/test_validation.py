@@ -15,7 +15,7 @@ def _load(name: str):
     return parse_graph_json(load_fixture_text(name))
 
 
-def test_valid_linear_graph_passes():
+def test_valid_linear_graph_passes(registered_test_connection):
     graph = _load("valid_linear.json")
     validate_graph(graph)  # should not raise
 
@@ -119,7 +119,7 @@ def test_type_mismatch_rejected(fresh_registry: NodeRegistry):
     assert "type_mismatch" in rules
 
 
-def test_no_false_positive_type_mismatch_on_real_mvp_graphs():
+def test_no_false_positive_type_mismatch_on_real_mvp_graphs(registered_test_connection):
     # All 4 MVP node types are text-only; real graphs should never trip
     # the type-mismatch rule.
     for fixture in ("valid_linear.json", "valid_branching.json"):
@@ -149,10 +149,16 @@ def test_code_node_malformed_source_rejected_once_not_double_reported():
     assert "type_mismatch" not in rules
 
 
-def test_provider_swap_needs_no_schema_redesign():
-    # spec-002 §5: the same graph JSON format supports both provider:
-    # "anthropic" and provider: "ollama" on otherwise-identical llm_call
-    # nodes, with no schema changes required between them.
+def test_connection_swap_needs_no_schema_redesign():
+    # spec-006 §5: the same graph JSON format supports two llm_call nodes
+    # referencing different named connections (one anthropic-typed, one
+    # ollama-typed under the hood), with no schema changes required between
+    # them -- the node config only ever names a connection, never a provider.
+    from backend.connections.store import add_connection
+
+    add_connection("personal-anthropic", "anthropic", {"api_key": "unused-in-tests"})
+    add_connection("my-pc-ollama", "ollama", {"host": "localhost", "port": 11434})
+
     graph = parse_graph_json(
         """
         {
@@ -160,9 +166,9 @@ def test_provider_swap_needs_no_schema_redesign():
           "nodes": [
             {"id": "in", "type": "text_input", "config": {"value": "hi"}},
             {"id": "anthropic_call", "type": "llm_call",
-             "config": {"provider": "anthropic", "model": "claude-opus-4-8", "max_tokens": 50}},
+             "config": {"connection": "personal-anthropic", "model": "claude-opus-4-8", "max_tokens": 50}},
             {"id": "ollama_call", "type": "llm_call",
-             "config": {"provider": "ollama", "model": "llama3.2", "max_tokens": 50}},
+             "config": {"connection": "my-pc-ollama", "model": "llama3.2", "max_tokens": 50}},
             {"id": "out1", "type": "text_output", "config": {}},
             {"id": "out2", "type": "text_output", "config": {}}
           ],
@@ -177,3 +183,30 @@ def test_provider_swap_needs_no_schema_redesign():
     )
 
     validate_graph(graph)  # should not raise
+
+
+def test_missing_connection_reports_specific_missing_connection_rule():
+    graph = parse_graph_json(
+        """
+        {
+          "version": "0.1",
+          "nodes": [
+            {"id": "in", "type": "text_input", "config": {"value": "hi"}},
+            {"id": "call", "type": "llm_call",
+             "config": {"connection": "not-configured-anywhere", "model": "claude-opus-4-8", "max_tokens": 50}},
+            {"id": "out", "type": "text_output", "config": {}}
+          ],
+          "edges": [
+            {"from": {"node": "in", "slot": "text"}, "to": {"node": "call", "slot": "prompt"}},
+            {"from": {"node": "call", "slot": "response"}, "to": {"node": "out", "slot": "text"}}
+          ]
+        }
+        """
+    )
+
+    with pytest.raises(GraphValidationError) as exc_info:
+        validate_graph(graph)
+
+    issue = next(i for i in exc_info.value.issues if i.rule == "missing_connection")
+    assert issue.node_id == "call"
+    assert "not-configured-anywhere" in issue.message

@@ -90,3 +90,22 @@ export interface GraphSpec {
   nodes: GraphNodeSpec[];
   edges: GraphEdgeSpec[];
 }
+
+// spec-006: named connection profiles, mirroring backend/api/schemas.py's
+// ConnectionTypeInfo/ConnectionInfo/TestConnectionResponse exactly.
+
+export interface ConnectionTypeInfo {
+  type: string;
+  category: "local" | "cloud";
+  config_schema: JsonSchema;
+}
+
+export interface ConnectionInfo {
+  name: string;
+  type: string;
+}
+
+export interface TestConnectionResponse {
+  success: boolean;
+  message: string;
+}

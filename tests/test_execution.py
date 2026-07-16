@@ -15,11 +15,11 @@ def _load(name: str):
     return parse_graph_json(load_fixture_text(name))
 
 
-def test_linear_graph_executes_and_returns_llm_response():
+def test_linear_graph_executes_and_returns_llm_response(registered_test_connection):
     graph = _load("valid_linear.json")
     client = FakeLLMClient(response=LLMResponse(text="mocked reply", input_tokens=12, output_tokens=8))
 
-    run_result = run_graph(graph, resources={"llm_client": client})
+    run_result = run_graph(graph, resources={"connections": {registered_test_connection: client}})
 
     assert run_result.result == {"n3": "mocked reply"}
     llm_trace = next(t for t in run_result.trace if t.node_id == "n2")
@@ -53,11 +53,11 @@ def test_branching_graph_fires_false_branch_only():
     assert run_result.result == {"n4": "no"}
 
 
-def test_every_node_execution_produces_complete_trace_record():
+def test_every_node_execution_produces_complete_trace_record(registered_test_connection):
     graph = _load("valid_linear.json")
     client = FakeLLMClient(response=LLMResponse(text="hi", input_tokens=1, output_tokens=2))
 
-    run_result = run_graph(graph, resources={"llm_client": client})
+    run_result = run_graph(graph, resources={"connections": {registered_test_connection: client}})
 
     assert len(run_result.trace) == 3
     for record in run_result.trace:
