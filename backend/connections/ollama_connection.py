@@ -7,10 +7,17 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+from typing import Any
 
 from pydantic import BaseModel
 
-from backend.connections.base import ConnectionTestResult, register_connection_type
+from backend.connections.base import (
+    ConnectionTestResult,
+    ToolCallRequest,
+    ToolCallResponse,
+    ToolDefinition,
+    register_connection_type,
+)
 
 
 class OllamaConnectionConfig(BaseModel):
@@ -62,6 +69,86 @@ def list_models(config: OllamaConnectionConfig) -> list[str]:
     return _fetch_tags(config)
 
 
+def complete_with_tools(
+    config: OllamaConnectionConfig,
+    *,
+    model: str,
+    system_prompt: str,
+    messages: list[dict[str, Any]],
+    tools: list[ToolDefinition],
+    max_tokens: int,
+) -> ToolCallResponse:
+    """spec-008 §5: a tool-calling-capable completion call. Posts to
+    /api/chat (not /api/generate, which has no tools support) -- Ollama's
+    tool-calling wire format is OpenAI-compatible, confirmed live against a
+    real server before implementation: tool definitions nest under
+    `{"type": "function", "function": {name, description, parameters}}`,
+    and a requested tool call's arguments arrive already parsed as a dict
+    (not a JSON string) under `message.tool_calls[].function.arguments`.
+
+    `temperature: 0` is deliberate, not an oversight: live-verifying this
+    spec against qwen2.5:14b showed the model's default sampling
+    temperature made it genuinely unreliable at actually populating
+    `tool_calls` -- it would sometimes emit a plausible-looking tool call
+    as plain text instead of the structured field, reproduced identically
+    via raw curl with the exact same payload (so a model behavior, not a
+    bug here). Forcing temperature 0 made it consistently reliable across
+    repeated live attempts. Tool-calling's entire point is precise,
+    structured output, so deterministic sampling is the right default for
+    this call specifically -- unlike `llm_call`, which is free-form
+    generation and rightly leaves sampling behavior alone.
+    """
+    wire_messages: list[dict[str, Any]] = []
+    if system_prompt:
+        wire_messages.append({"role": "system", "content": system_prompt})
+    wire_messages.extend(messages)
+
+    wire_tools = [
+        {
+            "type": "function",
+            "function": {"name": t.name, "description": t.description, "parameters": t.parameters},
+        }
+        for t in tools
+    ]
+
+    payload = {
+        "model": model,
+        "messages": wire_messages,
+        "tools": wire_tools,
+        "stream": False,
+        "options": {"num_predict": max_tokens, "temperature": 0},
+    }
+    request = urllib.request.Request(
+        f"{_base_url(config)}/api/chat",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Ollama tool-calling request to {_base_url(config)} failed: {e}") from e
+
+    message = data.get("message", {})
+    raw_tool_calls = message.get("tool_calls") or []
+    tool_calls = [
+        ToolCallRequest(
+            id=tc.get("id") or f"call_{i}",
+            name=tc["function"]["name"],
+            arguments=tc["function"]["arguments"],
+        )
+        for i, tc in enumerate(raw_tool_calls)
+    ]
+
+    return ToolCallResponse(
+        text=None if tool_calls else message.get("content", ""),
+        tool_calls=tool_calls,
+        input_tokens=data.get("prompt_eval_count", 0),
+        output_tokens=data.get("eval_count", 0),
+    )
+
+
 register_connection_type(
     "ollama",
     category="local",
@@ -69,4 +156,5 @@ register_connection_type(
     build_client=build_client,
     test_connection=test_connection,
     list_models=list_models,
+    complete_with_tools=complete_with_tools,
 )

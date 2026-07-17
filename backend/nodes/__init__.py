@@ -6,6 +6,7 @@ no changes needed to registry/, validation/, or execution/.
 """
 
 from backend.nodes import (  # noqa: F401
+    agent,
     code,
     conditional_branch,
     fan_out,

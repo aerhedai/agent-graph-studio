@@ -50,17 +50,36 @@ def check_unregistered_types(graph: GraphSpec, registry: NodeRegistry) -> tuple[
     return issues, unregistered_ids
 
 
+def agent_tool_referenced_ids(graph: GraphSpec) -> set[str]:
+    """Every node id referenced as a tool by any `agent` node (spec-008
+    §4) -- such a node's inputs legitimately come from the agent's direct
+    tool calls at runtime, not graph edges, so check_required_inputs must
+    not flag them as missing just because no edge feeds them. Defensive
+    about malformed `tools` config the same way every other rule is;
+    check_config_schema reports the real error for that case."""
+    ids: set[str] = set()
+    for node in graph.nodes:
+        if node.type != "agent":
+            continue
+        tools = node.config.get("tools") if isinstance(node.config, dict) else None
+        if not isinstance(tools, list):
+            continue
+        ids.update(tool_id for tool_id in tools if isinstance(tool_id, str))
+    return ids
+
+
 def check_required_inputs(
     graph: GraphSpec,
     registry: NodeRegistry,
     valid_edges: list[EdgeSpec],
     unregistered_ids: set[str],
+    tool_referenced_ids: set[str] = frozenset(),
 ) -> list[ValidationIssue]:
     """Spec §5 bullet 1: every required input slot must have an incoming edge."""
     covered = {(e.to.node, e.to.slot) for e in valid_edges}
     issues: list[ValidationIssue] = []
     for node in graph.nodes:
-        if node.id in unregistered_ids:
+        if node.id in unregistered_ids or node.id in tool_referenced_ids:
             continue
         definition = registry.get(node.type)
         inputs = effective_inputs(definition, node)
@@ -178,6 +197,49 @@ def check_missing_connections(
                     f"references connection '{name}' which isn't configured on this machine",
                 )
             )
+    return issues
+
+
+def check_agent_tool_references(
+    graph: GraphSpec, valid_edges: list[EdgeSpec], unregistered_ids: set[str]
+) -> list[ValidationIssue]:
+    """Spec-008 §4: an `agent` node's tool references bypass edge-based
+    input gathering entirely (ADR-008) -- so (a) every referenced node must
+    actually exist, and (b) a referenced node must not *also* have normal
+    incoming edges, which would create two ambiguous sources of truth for
+    the same inputs. Defensive about `tools` not being a list of strings
+    (malformed config) -- check_config_schema reports that real error,
+    same pattern as check_missing_connections.
+    """
+    node_ids = {n.id for n in graph.nodes}
+    edge_targets = {e.to.node for e in valid_edges}
+    issues: list[ValidationIssue] = []
+    for node in graph.nodes:
+        if node.id in unregistered_ids or node.type != "agent":
+            continue
+        tools = node.config.get("tools") if isinstance(node.config, dict) else None
+        if not isinstance(tools, list):
+            continue
+        for tool_id in tools:
+            if not isinstance(tool_id, str):
+                continue
+            if tool_id not in node_ids:
+                issues.append(
+                    ValidationIssue(
+                        "unknown_tool_reference",
+                        node.id,
+                        f"references tool node '{tool_id}' which does not exist in the graph",
+                    )
+                )
+            elif tool_id in edge_targets:
+                issues.append(
+                    ValidationIssue(
+                        "tool_node_has_conflicting_edges",
+                        node.id,
+                        f"tool node '{tool_id}' has normal incoming graph edges -- a tool "
+                        "node's inputs must come only from the agent's tool calls, not edges",
+                    )
+                )
     return issues
 
 

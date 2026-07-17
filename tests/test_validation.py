@@ -210,3 +210,89 @@ def test_missing_connection_reports_specific_missing_connection_rule():
     issue = next(i for i in exc_info.value.issues if i.rule == "missing_connection")
     assert issue.node_id == "call"
     assert "not-configured-anywhere" in issue.message
+
+
+def test_valid_agent_with_edge_free_tool_node_passes(registered_test_connection):
+    # spec-008 §4: a tool node's inputs come from the agent's tool calls,
+    # not edges -- so tool_1 correctly has zero incoming edges, only
+    # agent_1's own "task" input (a normal static slot) is edge-fed.
+    graph = parse_graph_json(
+        """
+        {
+          "version": "0.1",
+          "nodes": [
+            {"id": "in", "type": "text_input", "config": {"value": "hi"}},
+            {"id": "tool_1", "type": "code", "config": {"function_source": "def f(x):\\n    return x\\n"}},
+            {"id": "agent_1", "type": "agent", "config": {
+                "connection": "test-connection", "model": "m", "tools": ["tool_1"],
+                "memory": {"max_messages": 5}, "max_iterations": 3, "max_tokens": 50}},
+            {"id": "out", "type": "text_output", "config": {}}
+          ],
+          "edges": [
+            {"from": {"node": "in", "slot": "text"}, "to": {"node": "agent_1", "slot": "task"}},
+            {"from": {"node": "agent_1", "slot": "answer"}, "to": {"node": "out", "slot": "text"}}
+          ]
+        }
+        """
+    )
+
+    validate_graph(graph)  # should not raise
+
+
+def test_unknown_tool_reference_rejected(registered_test_connection):
+    graph = parse_graph_json(
+        """
+        {
+          "version": "0.1",
+          "nodes": [
+            {"id": "in", "type": "text_input", "config": {"value": "hi"}},
+            {"id": "agent_1", "type": "agent", "config": {
+                "connection": "test-connection", "model": "m", "tools": ["does_not_exist"],
+                "memory": {"max_messages": 5}, "max_iterations": 3, "max_tokens": 50}},
+            {"id": "out", "type": "text_output", "config": {}}
+          ],
+          "edges": [
+            {"from": {"node": "in", "slot": "text"}, "to": {"node": "agent_1", "slot": "task"}},
+            {"from": {"node": "agent_1", "slot": "answer"}, "to": {"node": "out", "slot": "text"}}
+          ]
+        }
+        """
+    )
+
+    with pytest.raises(GraphValidationError) as exc_info:
+        validate_graph(graph)
+
+    issue = next(i for i in exc_info.value.issues if i.rule == "unknown_tool_reference")
+    assert issue.node_id == "agent_1"
+    assert "does_not_exist" in issue.message
+
+
+def test_tool_node_with_conflicting_incoming_edge_rejected(registered_test_connection):
+    graph = parse_graph_json(
+        """
+        {
+          "version": "0.1",
+          "nodes": [
+            {"id": "in", "type": "text_input", "config": {"value": "hi"}},
+            {"id": "edge_source", "type": "text_input", "config": {"value": "conflict"}},
+            {"id": "tool_1", "type": "code", "config": {"function_source": "def f(x):\\n    return x\\n"}},
+            {"id": "agent_1", "type": "agent", "config": {
+                "connection": "test-connection", "model": "m", "tools": ["tool_1"],
+                "memory": {"max_messages": 5}, "max_iterations": 3, "max_tokens": 50}},
+            {"id": "out", "type": "text_output", "config": {}}
+          ],
+          "edges": [
+            {"from": {"node": "in", "slot": "text"}, "to": {"node": "agent_1", "slot": "task"}},
+            {"from": {"node": "agent_1", "slot": "answer"}, "to": {"node": "out", "slot": "text"}},
+            {"from": {"node": "edge_source", "slot": "text"}, "to": {"node": "tool_1", "slot": "x"}}
+          ]
+        }
+        """
+    )
+
+    with pytest.raises(GraphValidationError) as exc_info:
+        validate_graph(graph)
+
+    issue = next(i for i in exc_info.value.issues if i.rule == "tool_node_has_conflicting_edges")
+    assert issue.node_id == "agent_1"
+    assert "tool_1" in issue.message

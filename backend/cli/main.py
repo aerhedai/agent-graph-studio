@@ -6,7 +6,7 @@ import sys
 import backend.connections  # noqa: F401 -- import side effect registers every connection type
 import backend.nodes  # noqa: F401 -- import side effect registers the 4 MVP node types
 from backend.connections.errors import ConnectionNotFoundError
-from backend.connections.resolver import resolve_connections
+from backend.connections.resolver import resolve_connection_profiles, resolve_connections
 from backend.execution.engine import run_graph
 from backend.schema.loader import GraphParseError, load_graph_json
 from backend.validation.errors import GraphValidationError
@@ -33,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         validate_graph(graph)
         resolved_connections = resolve_connections(graph)
+        resolved_connection_profiles = resolve_connection_profiles(graph)
     except GraphValidationError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -40,7 +41,13 @@ def main(argv: list[str] | None = None) -> int:
         print(str(e), file=sys.stderr)
         return 1
 
-    run_result = run_graph(graph, resources={"connections": resolved_connections})
+    run_result = run_graph(
+        graph,
+        resources={
+            "connections": resolved_connections,
+            "connection_profiles": resolved_connection_profiles,
+        },
+    )
 
     print(json.dumps(run_result.model_dump(mode="json"), indent=2))
     return 0
