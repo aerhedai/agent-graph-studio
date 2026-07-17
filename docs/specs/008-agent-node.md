@@ -17,7 +17,7 @@ Every node type so far (`llm_call`, `code`, `mcp_call`, `loop`, `fan_out`/`merge
 
 In scope:
 - An `agent` node type: inputs a `connection` (reused from SPEC-006), a `memory` config, a list of **tool references** (other node IDs in the same graph the agent is allowed to call), and a task/prompt
-- **Tool-calling support in the connection layer**: extend `ConnectionType` with an optional capability (mirroring SPEC-007's optional `list_models` pattern) for connections whose underlying model supports native tool-calling — Anthropic's Claude models support this well; support is not assumed universal
+- **Tool-calling support in the connection layer**: extend `ConnectionType` with an optional capability (mirroring SPEC-007's optional `list_models` pattern) for connections whose underlying model supports native tool-calling. **Primary target for this spec: Ollama**, which has genuine native tool-calling support (an OpenAI-compatible `tools` API) for compatible models — confirmed working for Llama 3.1+, Qwen 2.5/3, Mistral Nemo, Command-R. Anthropic support should still be implemented (it's a smaller addition given Claude's own tool-use API), but Ollama is the one that must be live-verified, since it's the connection actually available without billing right now.
 - **Tool schema derivation**: each referenced tool node's existing input/output schema (already established via `resolve_slots` for dynamic nodes, or static `.inputs`/`.outputs` otherwise) is translated into the tool-calling schema the model API expects — no new schema system, reuse what exists
 - **The reasoning loop itself**: call the model with the current conversation + available tools; if it requests a tool call, execute the referenced node directly (not via a graph edge — see §4) with the model-provided arguments, feed the result back, repeat; stop when the model produces a final answer with no further tool calls, or a `max_iterations` safety cap is hit (same safety-cap principle as SPEC-004's `loop` node)
 - **Memory (v1 scope)**: simple in-memory conversation window (last N messages), scoped to a single graph run only — cross-run/persistent memory (the SQLite-backed version) is explicitly deferred to a future spec (see §3 out-of-scope)
@@ -25,7 +25,7 @@ In scope:
 
 Out of scope (future specs):
 - Persistent/cross-run memory (Postgres/SQLite-backed) — this is its own spec, since it involves storage design, session identity, and retention policy that shouldn't be rushed into this one
-- Tool-calling support for Ollama/local models — many local models have weaker or inconsistent native tool-calling support; this spec targets Anthropic connections for tool-calling, and documents (rather than silently ignores) the limitation for Ollama until it's specifically addressed
+- Guaranteeing reliable tool-calling across *all* Ollama models — per current research, smaller local models (roughly 8B and under) show real reliability drop-off on multi-step or parallel tool calls. This spec targets a specific, confirmed-good model (e.g. Qwen3 or Llama 3.1+) for its acceptance criteria, and documents rather than silently papers over the fact that not every locally available model will perform equally well
 - Summary-style memory (rolling summary instead of raw window) — a real future option, not needed for a first working version
 - Nested agents (an agent whose tool list includes another `agent` node) — should not be explicitly forbidden, but not a tested/designed-for case in this spec
 
@@ -67,11 +67,11 @@ Each tool node's `resolve_slots`/static schema is converted to the model API's e
 
 ## 6. Acceptance criteria
 
-- [ ] An `agent` node with one tool (e.g. a `code` node) correctly calls that tool when the model determines it's needed, and incorporates the result into its final answer — live-verified, non-mocked, using a real Anthropic connection
+- [ ] An `agent` node with one tool (e.g. a `code` node) correctly calls that tool when the model determines it's needed, and incorporates the result into its final answer — live-verified, non-mocked, using a real local Ollama connection with a confirmed tool-calling-capable model (e.g. Qwen3 or Llama 3.1+)
 - [ ] An `agent` node with **no** tool calls needed produces a direct final answer without ever invoking a tool — confirms the loop doesn't force unnecessary tool use
 - [ ] `max_iterations` correctly stops the loop as a hard safety cap, even if the model would otherwise keep requesting tools
 - [ ] Memory window correctly limits context to the last N messages within a single run — verified by an agent conversation exceeding N turns internally (e.g. via repeated tool calls) and confirming early context is dropped as expected
-- [ ] Attempting to use an Ollama-type connection with `agent` produces a clear, explicit error or documented degraded behavior (per whatever `supports_tool_calling` resolves to) — not a silent failure or confusing model error
+- [ ] Attempting to use `agent` with a connection/model combination that doesn't support tool-calling (e.g. a non-tool-calling Ollama model, or any connection type without `supports_tool_calling`) produces a clear, explicit error — not a silent failure or a confusing raw model error
 - [ ] Agent trace record correctly nests each tool call as a `child_trace`, inspectable the same way SPEC-004's loop/fan-out nesting works
 - [ ] A referenced tool node's schema-derivation correctly matches what's actually callable — i.e. the model is offered accurate tool descriptions/parameters, not a stale or mismatched schema
 - [ ] Full existing test suite (SPEC-001–007) still passes unchanged
