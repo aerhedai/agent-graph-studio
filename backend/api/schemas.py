@@ -53,6 +53,10 @@ class ConnectionTypeInfo(BaseModel):
     type: str
     category: str  # "local" | "cloud"
     config_schema: dict[str, Any]
+    supports_model_listing: bool
+    """spec-006 §9: whether GET /connections/{name}/models is meaningful for
+    connections of this type -- lets the frontend decide up front whether to
+    render the llm_call model field as a dropdown, without trial-and-error."""
 
 
 class ConnectionInfo(BaseModel):

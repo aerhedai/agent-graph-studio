@@ -82,6 +82,46 @@ def test_default_connection_registry_has_anthropic_and_ollama():
     assert default_connection_registry.get("ollama").category == "local"
 
 
+def test_definition_without_list_models_defaults_to_none():
+    dummy_config = type("DummyConfig2", (BaseModel,), {})
+    definition = ConnectionDefinition(
+        type_name="dummy2",
+        category="cloud",
+        config_model=dummy_config,
+        build_client=lambda config: object(),
+        test_connection=lambda config: ConnectionTestResult(success=True, message="ok"),
+    )
+    assert definition.list_models is None
+
+
+def test_ollama_list_models_returns_real_names(monkeypatch):
+    import io
+    import json as json_module
+
+    import backend.connections.ollama_connection as ollama_connection_module
+
+    class _FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(url, timeout=5):
+        return _FakeResponse(json_module.dumps({"models": [{"name": "llama3"}]}).encode("utf-8"))
+
+    monkeypatch.setattr(ollama_connection_module.urllib.request, "urlopen", fake_urlopen)
+
+    config = ollama_connection_module.OllamaConnectionConfig(host="localhost", port=11434)
+    assert ollama_connection_module.list_models(config) == ["llama3"]
+
+
+def test_anthropic_connection_has_no_list_models():
+    from backend.connections.base import default_connection_registry
+
+    assert default_connection_registry.get("anthropic").list_models is None
+
+
 # --- resolver ---------------------------------------------------------------
 
 

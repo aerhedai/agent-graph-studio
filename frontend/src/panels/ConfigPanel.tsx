@@ -6,6 +6,7 @@ import type { JsonSchemaProperty, SlotInfo } from "../api/types";
 import type { GenericFlowNode } from "../canvas/GenericNode";
 import { ConnectionPicker } from "./ConnectionPicker";
 import { renderPrimitiveField } from "./fieldRenderers";
+import { ModelField } from "./ModelField";
 
 interface ConfigPanelProps {
   node: GenericFlowNode;
@@ -71,7 +72,7 @@ export function ConfigPanel({ node, onConfigChange }: ConfigPanelProps) {
       {Object.entries(properties).map(([name, propSchema]) => (
         <div key={name} className="config-panel__field">
           <label htmlFor={`field-${name}`}>{propSchema.title ?? name}</label>
-          {renderField(name, propSchema, draft[name], setField)}
+          {renderField(name, propSchema, draft[name], setField, draft)}
         </div>
       ))}
       {error && <div className="config-panel__error">{error}</div>}
@@ -82,16 +83,22 @@ export function ConfigPanel({ node, onConfigChange }: ConfigPanelProps) {
   );
 }
 
-// `function_source` and `connection` are the two deliberate per-field-name
-// special cases (spec-005 §7, spec-006 §4): a real multi-line editor and a
-// named-connection picker respectively, instead of a generic single-line
-// input, since both are foreseeable UX problems worth solving directly.
-// Everything else falls through to the shared type-driven renderer.
+// `function_source`, `connection`, and `model` are the deliberate per-
+// field-name special cases (spec-005 §7, spec-006 §4/§9): a real multi-line
+// editor, a named-connection picker, and (when the selected connection
+// supports it) a live model dropdown, instead of a generic single-line
+// input, since all three are foreseeable UX problems worth solving
+// directly. Everything else falls through to the shared type-driven
+// renderer. `draft` (the whole in-progress config, not just this field's
+// value) is threaded through so `model` can read the sibling `connection`
+// field -- a small, general widening rather than a model-specific hack, so
+// any future field needing cross-field context gets it for free.
 function renderField(
   name: string,
   propSchema: JsonSchemaProperty,
   value: unknown,
   setField: (name: string, value: unknown) => void,
+  draft: Record<string, unknown>,
 ) {
   if (name === "function_source") {
     return (
@@ -109,6 +116,16 @@ function renderField(
       <ConnectionPicker
         value={typeof value === "string" ? value : undefined}
         onChange={(connectionName) => setField(name, connectionName)}
+      />
+    );
+  }
+
+  if (name === "model") {
+    return (
+      <ModelField
+        value={value}
+        onChange={(v) => setField(name, v)}
+        connectionName={typeof draft.connection === "string" ? draft.connection : undefined}
       />
     );
   }

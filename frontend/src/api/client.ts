@@ -84,6 +84,10 @@ export function testConnection(
   });
 }
 
+export function fetchConnectionModels(name: string): Promise<string[]> {
+  return request<string[]>(`/connections/${encodeURIComponent(name)}/models`);
+}
+
 export async function deleteConnection(name: string): Promise<void> {
   const response = await fetch(`${API_BASE}/connections/${encodeURIComponent(name)}`, {
     method: "DELETE",

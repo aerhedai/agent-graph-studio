@@ -112,3 +112,47 @@ Written after implementation, following the SPEC-003/004/005 precedent of justif
 - **Test isolation seam: `AGENT_GRAPH_STUDIO_CONNECTIONS_PATH` env var.** `backend/connections/store.py::connections_path()` reads this override before falling back to `~/.agent-graph-studio/connections.json`. `tests/conftest.py` sets it via an autouse fixture (`isolated_connections_store`, one fresh `tmp_path` per test) so the full suite (149 tests, including the two new connections-specific files) never reads or writes the real store — necessary once `validate_graph()` started consulting the store directly, since test-time `resources=` injection alone no longer bypasses that check.
 - **Live end-to-end demos performed at both checkpoints, against a real remote Ollama.** Phase 1: API-level only (`POST /connections` → `POST /connections/{name}/test` → `POST /runs` → polled to completion), against `curl`. Phase 2: the full canvas UI flow (drag `llm_call` onto canvas → open its config panel → connection picker's "+ New connection" → Local tab → fill host/port → **Test Connection** against the real server → **Save**, enabled only after a successful test → picker's dropdown immediately reflects the new connection → wire it into a 3-node graph → **Run** → real model response visible in the trace inspector), driven by Playwright against real `uvicorn`/`vite` dev servers, screenshots viewed directly. One incidental finding during Phase 1's live run: the first model tried (`gemma4:latest`) is a "thinking" model that silently burned its entire token budget on hidden reasoning, returning an empty response string — confirmed via a raw `curl` to Ollama's own `/api/generate` reproducing the same behavior, i.e. not a bug in this project's code. Switched to a non-thinking model (`qwen2.5:14b`) for both demos.
 - **`fieldRenderers.tsx`, a small extraction to avoid a circular import.** `ConfigPanel.tsx` special-cases `config.connection` into a `<ConnectionPicker>`; `ConnectionPicker.tsx` in turn needs the same generic boolean/number/string/JSON-fallback field rendering for *its own* inline connection-type form (e.g. Ollama's `host`/`port`). Rather than have the two components import each other, the shared renderer moved to its own module (`renderPrimitiveField`), imported by both.
+
+## 9. Addendum: model discovery for local connections
+
+Added after initial SPEC-006 delivery, prompted by real usage: typing a model name by hand (e.g. `qwen2.5:14b`) is error-prone and requires leaving the canvas to check what's actually pulled on the target Ollama server. This addendum lets `llm_call`'s `model` field become a live dropdown of real, currently-available models when the selected connection supports discovering them.
+
+### Goal
+
+When an `llm_call` node's selected connection is a type that can enumerate its own models (Ollama today), the `model` field renders as a `<select>` populated from that connection's real, live model list, instead of a free-text input. Connections whose type can't enumerate models (Anthropic today) keep the existing free-text input — this is additive, not a replacement of manual entry everywhere.
+
+### Design decisions
+
+- **Capability is opt-in per connection type, not assumed.** `ConnectionDefinition` gains one new optional field: `list_models: Callable[[BaseModel], list[str]] | None`. Only `ollama_connection.py` implements it (reusing the same `/api/tags` call `test_connection` already makes, returning just the name list). `anthropic_connection.py` leaves it `None` — Anthropic has no equivalently cheap, unauthenticated-feeling "list what I can call" primitive wired up yet, and forcing one isn't in scope here. A third connection type is free to implement it or not; nothing downstream assumes every type has it.
+- **The frontend must be able to ask "does this type support listing?" without guessing or trial-and-erroring a request.** `ConnectionTypeInfo` (from `GET /connection-types`) gains `supports_model_listing: bool`, mirroring how `dynamic_schema` already tells the node palette whether to call `resolve-slots`. This keeps the model field's rendering decision a single, cheap, already-fetched lookup rather than a failed-request fallback.
+- **`model` becomes the second field (after `connection`) that needs to read a sibling field's value.** `ConfigPanel`'s field renderer gains access to the whole in-progress draft config (not just the one field being rendered) specifically so the `model` field can read `draft.connection` — this is a small, general widening (not a `model`-specific hack), since any future field needing cross-field context gets it for free.
+- **Graceful degradation, always.** No connection selected yet, connection type doesn't support listing, or the live fetch fails (server unreachable) → falls back to the existing plain text input rather than blocking or erroring the whole config panel. A previously-typed model value that isn't in the fetched list (e.g. it was since removed on the server) is kept selectable, not silently dropped.
+
+### Data model
+
+```
+GET /connections/{name}/models
+  -> ["qwen2.5:14b", "devstral:24b", ...]
+  404 if the connection name isn't in the store
+  422 if that connection's type doesn't implement list_models
+  502 if the type supports listing but the live call itself fails (server unreachable, etc.)
+```
+
+`ConnectionTypeInfo` (existing `GET /connection-types` response shape) gains one field:
+```json
+{ "type": "ollama", "category": "local", "supports_model_listing": true, "config_schema": {...} }
+```
+
+### Acceptance criteria
+
+- [ ] `GET /connection-types` reports `supports_model_listing: true` for `ollama`, `false` for `anthropic`, with zero hardcoded type-name checks in the endpoint itself
+- [ ] `GET /connections/{name}/models` returns real, live model names for a real Ollama connection, verified against the actual running remote server (not mocked)
+- [ ] In the canvas, selecting an Ollama-typed connection on an `llm_call` node turns its `model` field into a dropdown of real models fetched from that server; selecting an Anthropic-typed connection (or no connection yet) leaves it a plain text input
+- [ ] Changing the selected connection re-fetches/re-renders the model field accordingly (no stale dropdown from a previously-selected connection)
+- [ ] Full existing test suite continues to pass unchanged
+
+### 9.1 Implementation notes
+
+- **Verified live** against the same real remote Ollama server used in §8's demos (`rohan-pc` over Tailscale): dropped an `llm_call` node with no connection selected → `model` field rendered as a plain `<input>` (`#field-model` tag `INPUT`); created and selected a real Ollama connection → the same field re-rendered as a `<select>` populated with the server's actual 7 pulled models (`gemma4:latest`, `llava:34b`, `llava-llama3:latest`, `qwen2.5:14b`, `llava:13b`, `devstral:24b`, `qwen3-coder:30b`); picked one, saved, confirmed persisted. Opening a second, unsaved Cloud/Anthropic connection form alongside it left the already-selected Ollama connection and its model dropdown untouched, confirming the two code paths (`supports_model_listing: true` vs `false`) don't interfere. Zero console errors throughout. `git diff backend/execution/engine.py` remained empty for this addendum too — the new endpoint and capability flow entirely through the existing connection registry and resources bag, same as the rest of SPEC-006.
+- **`ConfigPanel`'s `renderField` now also receives the whole draft config**, not just the field being rendered, so `model` can read the sibling `connection` field. Kept general (a `draft` param) rather than a one-off `model`-specific prop threading, per the design decision above.
+- **Operational gotcha, not a code bug**: while live-verifying this addendum, a stale `uvicorn`/`vite` dev-server process from an earlier checkpoint was still bound to ports 8000/5173, silently serving pre-addendum code (`GET /connection-types` responses were missing `supports_model_listing` even after the source changed) until it was found via `lsof` and killed. Worth remembering for any future live-verification pass: check for and kill stale dev-server processes before trusting a "live" check against `localhost`.

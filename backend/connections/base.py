@@ -19,6 +19,12 @@ class ConnectionDefinition:
     config_model: type[BaseModel]
     build_client: Callable[[BaseModel], Any]
     test_connection: Callable[[BaseModel], ConnectionTestResult]
+    list_models: Callable[[BaseModel], list[str]] | None = None
+    """Optional per-type capability (spec-006 §9): enumerates the real
+    models available on this connection's actual backend, e.g. Ollama's
+    /api/tags. None for types with no cheap discovery primitive (Anthropic
+    today) -- callers must check this before calling GET
+    /connections/{name}/models, never assume every type has it."""
 
 
 class ConnectionRegistry:
@@ -50,13 +56,15 @@ def register_connection_type(
     config_model: type[BaseModel],
     build_client: Callable[[BaseModel], Any],
     test_connection: Callable[[BaseModel], ConnectionTestResult],
+    list_models: Callable[[BaseModel], list[str]] | None = None,
     registry: ConnectionRegistry = default_connection_registry,
 ) -> None:
     """Plain registration call (not a decorator, unlike @register_node) --
-    a connection type bundles three things (schema, build_client, test)
-    rather than wrapping a single execute function. Called as an import
-    side effect at the bottom of each connection-type module, same
-    "registration happens on import" precedent as the node registry."""
+    a connection type bundles several things (schema, build_client, test,
+    optionally list_models) rather than wrapping a single execute function.
+    Called as an import side effect at the bottom of each connection-type
+    module, same "registration happens on import" precedent as the node
+    registry."""
     registry.register(
         ConnectionDefinition(
             type_name=type_name,
@@ -64,5 +72,6 @@ def register_connection_type(
             config_model=config_model,
             build_client=build_client,
             test_connection=test_connection,
+            list_models=list_models,
         )
     )

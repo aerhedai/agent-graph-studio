@@ -171,6 +171,7 @@ def list_connection_types() -> list[ConnectionTypeInfo]:
                 type=type_name,
                 category=definition.category,
                 config_schema=definition.config_model.model_json_schema(),
+                supports_model_listing=definition.list_models is not None,
             )
         )
     return infos
@@ -179,6 +180,32 @@ def list_connection_types() -> list[ConnectionTypeInfo]:
 @app.get("/connections", response_model=list[ConnectionInfo])
 def list_all_connections() -> list[ConnectionInfo]:
     return [ConnectionInfo(name=c.name, type=c.type) for c in list_connections()]
+
+
+@app.get("/connections/{name}/models", response_model=list[str])
+def list_connection_models(name: str) -> list[str]:
+    """spec-006 §9: real, live models available on this connection's actual
+    backend (e.g. Ollama's /api/tags), for the llm_call model-field dropdown.
+    Only meaningful for connection types where
+    ConnectionTypeInfo.supports_model_listing is true -- the frontend checks
+    that first via GET /connection-types rather than trial-and-erroring this
+    endpoint against every connection."""
+    profile = get_connection(name)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
+
+    definition = default_connection_registry.get(profile.type)
+    if definition is None or definition.list_models is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Connection type '{profile.type}' does not support model listing",
+        )
+
+    config = definition.config_model.model_validate(profile.config)
+    try:
+        return definition.list_models(config)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to list models: {e}") from e
 
 
 @app.post("/connections", response_model=ConnectionInfo, status_code=201)

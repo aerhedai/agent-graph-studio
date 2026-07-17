@@ -98,6 +98,7 @@ export interface ConnectionTypeInfo {
   type: string;
   category: "local" | "cloud";
   config_schema: JsonSchema;
+  supports_model_listing: boolean;
 }
 
 export interface ConnectionInfo {

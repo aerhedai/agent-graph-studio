@@ -16,10 +16,70 @@ def test_connection_types_lists_anthropic_and_ollama_with_zero_hardcoding():
 
     assert by_type["anthropic"]["category"] == "cloud"
     assert "api_key" in by_type["anthropic"]["config_schema"]["properties"]
+    assert by_type["anthropic"]["supports_model_listing"] is False
 
     assert by_type["ollama"]["category"] == "local"
     assert "host" in by_type["ollama"]["config_schema"]["properties"]
     assert "port" in by_type["ollama"]["config_schema"]["properties"]
+    assert by_type["ollama"]["supports_model_listing"] is True
+
+
+def test_list_connection_models_returns_real_live_models(monkeypatch):
+    import io
+    import json as json_module
+
+    import backend.connections.ollama_connection as ollama_connection_module
+
+    class _FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(url, timeout=5):
+        return _FakeResponse(
+            json_module.dumps({"models": [{"name": "qwen2.5:14b"}, {"name": "devstral:24b"}]}).encode(
+                "utf-8"
+            )
+        )
+
+    monkeypatch.setattr(ollama_connection_module.urllib.request, "urlopen", fake_urlopen)
+    add_connection("models-conn", "ollama", {"host": "localhost", "port": 11434})
+
+    response = client.get("/connections/models-conn/models")
+
+    assert response.status_code == 200
+    assert response.json() == ["qwen2.5:14b", "devstral:24b"]
+
+
+def test_list_connection_models_unsupported_type_returns_422():
+    add_connection("no-listing-conn", "anthropic", {"api_key": "sk-1"})
+
+    response = client.get("/connections/no-listing-conn/models")
+
+    assert response.status_code == 422
+
+
+def test_list_connection_models_unknown_connection_returns_404():
+    response = client.get("/connections/never-saved-for-models/models")
+    assert response.status_code == 404
+
+
+def test_list_connection_models_live_failure_returns_502(monkeypatch):
+    import urllib.error
+
+    import backend.connections.ollama_connection as ollama_connection_module
+
+    def fake_urlopen_failure(url, timeout=5):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(ollama_connection_module.urllib.request, "urlopen", fake_urlopen_failure)
+    add_connection("unreachable-models-conn", "ollama", {"host": "localhost", "port": 19999})
+
+    response = client.get("/connections/unreachable-models-conn/models")
+
+    assert response.status_code == 502
 
 
 def test_list_connections_never_returns_config():
