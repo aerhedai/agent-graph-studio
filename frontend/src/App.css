@@ -317,6 +317,96 @@
   cursor: default;
 }
 
+/* --- connection picker (spec-006) --- */
+
+.connection-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.connection-picker__row {
+  display: flex;
+  gap: 6px;
+}
+
+.connection-picker__row select {
+  flex: 1;
+  font: inherit;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.connection-picker__new-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.connection-picker__form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.connection-picker__tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.connection-picker__tab {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: none;
+  background: none;
+  color: var(--text);
+  opacity: 0.6;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.connection-picker__tab.active {
+  opacity: 1;
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+
+.connection-picker__test-result {
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+
+.connection-picker__test-result.success {
+  color: var(--status-success);
+  background: color-mix(in srgb, var(--status-success) 15%, transparent);
+}
+
+.connection-picker__test-result.failure {
+  color: var(--status-error);
+  background: color-mix(in srgb, var(--status-error) 15%, transparent);
+}
+
+.connection-picker__form-actions {
+  display: flex;
+  gap: 8px;
+}
+
 /* --- trace inspector --- */
 
 .trace-inspector__empty {

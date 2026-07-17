@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, Field
 
 from backend.execution.errors import NodeExecutionError
@@ -13,11 +11,10 @@ from backend.schema.types import TEXT
 
 
 class LLMCallConfig(BaseModel):
-    provider: str = "anthropic"
+    connection: str
     model: str
     system_prompt: str = ""
     max_tokens: int = Field(gt=0)
-    provider_options: dict[str, Any] = Field(default_factory=dict)
 
 
 @register_node(
@@ -28,15 +25,19 @@ class LLMCallConfig(BaseModel):
 )
 def execute_llm_call(ctx: ExecutionContext) -> NodeResult:
     config = LLMCallConfig.model_validate(ctx.node.config)
+    # The named connection -> real client resolution happens entirely
+    # upstream (CLI/API layer, backend/connections/resolver.py) before
+    # run_graph is ever called (spec-006 §4) -- this node just looks up
+    # its already-built client by name. The None case below is a defensive
+    # fallback only: in production, validate_graph()'s missing_connection
+    # rule plus resolve_connections() already guarantee this is present.
+    client = ctx.resources.get("connections", {}).get(config.connection)
+    if client is None:
+        raise NodeExecutionError(
+            f"No resolved client for connection '{config.connection}' -- "
+            "it should have been resolved before this run started"
+        )
     try:
-        client = ctx.resources.get("llm_client")
-        if client is None:
-            # Dispatch to the right provider client lives entirely in
-            # backend/llm/providers.py -- this node (and the engine) never
-            # branches on config.provider itself.
-            from backend.llm.providers import build_client
-
-            client = build_client(config.provider, config.provider_options)
         response = client.complete(
             model=config.model,
             system_prompt=config.system_prompt,

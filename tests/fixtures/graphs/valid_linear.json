@@ -2,7 +2,7 @@
   "version": "0.1",
   "nodes": [
     { "id": "n1", "type": "text_input", "config": { "value": "hello" } },
-    { "id": "n2", "type": "llm_call", "config": { "model": "claude-opus-4-8", "system_prompt": "", "max_tokens": 100 } },
+    { "id": "n2", "type": "llm_call", "config": { "connection": "test-connection", "model": "claude-opus-4-8", "system_prompt": "", "max_tokens": 100 } },
     { "id": "n3", "type": "text_output", "config": {} }
   ],
   "edges": [

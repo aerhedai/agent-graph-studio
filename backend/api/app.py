@@ -20,16 +20,26 @@ from uuid import uuid4
 from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+import backend.connections  # noqa: F401 -- import side effect registers every connection type
 import backend.nodes  # noqa: F401 -- import side effect registers every node type
 from backend.api import runs
 from backend.api.schemas import (
+    ConnectionInfo,
+    ConnectionTypeInfo,
+    CreateConnectionRequest,
     NodeTypeInfo,
     ResolveSlotsRequest,
     ResolveSlotsResponse,
     RunStatusResponse,
     RunSubmitResponse,
     SlotInfo,
+    TestConnectionRequest,
+    TestConnectionResponse,
 )
+from backend.connections.base import default_connection_registry
+from backend.connections.errors import ConnectionNotFoundError, DuplicateConnectionError
+from backend.connections.resolver import resolve_connections
+from backend.connections.store import add_connection, delete_connection, get_connection, list_connections
 from backend.registry.base import default_registry, effective_inputs, effective_outputs
 from backend.schema.models import GraphSpec, NodeSpec
 from backend.validation.errors import GraphValidationError
@@ -109,6 +119,14 @@ def submit_run(graph: GraphSpec, background_tasks: BackgroundTasks) -> RunSubmit
     zero duplicated logic) and returns immediately; the run itself executes
     in a background worker thread. Necessary given SPEC-004's loops could run
     for a while -- the HTTP request must not be held open for the duration.
+
+    Spec-006: validate_graph() already includes the missing_connection rule,
+    so a graph referencing an unconfigured connection is rejected here with
+    the same 422/issues shape as any other validation failure -- no separate
+    error path. Once validation passes, every referenced connection is
+    resolved to a real client (backend/connections/resolver.py) and handed
+    to the run as `resources={"connections": ...}`, exactly the same opaque
+    resources bag mechanism the engine has supported since SPEC-002.
     """
     try:
         validate_graph(graph)
@@ -121,10 +139,128 @@ def submit_run(graph: GraphSpec, background_tasks: BackgroundTasks) -> RunSubmit
             ],
         ) from e
 
+    try:
+        resolved_connections = resolve_connections(graph)
+    except ConnectionNotFoundError as e:
+        # Only reachable via a race (store changed between validate_graph()
+        # and here) -- validate_graph()'s missing_connection rule already
+        # covers the common case with the same friendly error shape.
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
     run_id = str(uuid4())
     runs.create_run(run_id)
-    background_tasks.add_task(runs.execute_run, run_id, graph)
+    background_tasks.add_task(
+        runs.execute_run, run_id, graph, {"connections": resolved_connections}
+    )
     return RunSubmitResponse(run_id=run_id, status="running")
+
+
+@app.get("/connection-types", response_model=list[ConnectionTypeInfo])
+def list_connection_types() -> list[ConnectionTypeInfo]:
+    """The connection picker's entire data source for type-appropriate
+    fields and Local/Cloud tabs -- mirrors GET /node-types exactly.
+    `default_connection_registry.all_types()` is the only place any
+    connection type list is enumerated; nothing is hardcoded here or in the
+    frontend. A necessary addition beyond spec-006 §5's literal endpoint
+    list, same justification as SPEC-005's resolve-slots addition."""
+    infos: list[ConnectionTypeInfo] = []
+    for type_name in default_connection_registry.all_types():
+        definition = default_connection_registry.get(type_name)
+        infos.append(
+            ConnectionTypeInfo(
+                type=type_name,
+                category=definition.category,
+                config_schema=definition.config_model.model_json_schema(),
+                supports_model_listing=definition.list_models is not None,
+            )
+        )
+    return infos
+
+
+@app.get("/connections", response_model=list[ConnectionInfo])
+def list_all_connections() -> list[ConnectionInfo]:
+    return [ConnectionInfo(name=c.name, type=c.type) for c in list_connections()]
+
+
+@app.get("/connections/{name}/models", response_model=list[str])
+def list_connection_models(name: str) -> list[str]:
+    """spec-006 §9: real, live models available on this connection's actual
+    backend (e.g. Ollama's /api/tags), for the llm_call model-field dropdown.
+    Only meaningful for connection types where
+    ConnectionTypeInfo.supports_model_listing is true -- the frontend checks
+    that first via GET /connection-types rather than trial-and-erroring this
+    endpoint against every connection."""
+    profile = get_connection(name)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
+
+    definition = default_connection_registry.get(profile.type)
+    if definition is None or definition.list_models is None:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Connection type '{profile.type}' does not support model listing",
+        )
+
+    config = definition.config_model.model_validate(profile.config)
+    try:
+        return definition.list_models(config)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to list models: {e}") from e
+
+
+@app.post("/connections", response_model=ConnectionInfo, status_code=201)
+def create_connection(request: CreateConnectionRequest) -> ConnectionInfo:
+    definition = default_connection_registry.get(request.type)
+    if definition is None:
+        raise HTTPException(status_code=422, detail=f"Unknown connection type: {request.type!r}")
+    try:
+        definition.config_model.model_validate(request.config)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid config for '{request.type}': {e}") from e
+
+    try:
+        profile = add_connection(request.name, request.type, request.config)
+    except DuplicateConnectionError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    return ConnectionInfo(name=profile.name, type=profile.type)
+
+
+@app.post("/connections/{name}/test", response_model=TestConnectionResponse)
+def test_connection_endpoint(name: str, request: TestConnectionRequest) -> TestConnectionResponse:
+    """Tests a real, lightweight round-trip against the connection's actual
+    backend. A failed connectivity check is an expected outcome (wrong
+    host, server down, bad key), not a server error -- always a normal 200
+    with success=False, never a non-2xx.
+
+    If `request.type`/`request.config` are given, tests that configuration
+    directly without requiring it to be saved yet (the canvas's "Test before
+    Save" flow, spec-006 §3). Otherwise re-tests the already-saved
+    connection named `name`."""
+    if request.type is not None and request.config is not None:
+        type_name, config_dict = request.type, request.config
+    else:
+        profile = get_connection(name)
+        if profile is None:
+            raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
+        type_name, config_dict = profile.type, profile.config
+
+    definition = default_connection_registry.get(type_name)
+    if definition is None:
+        raise HTTPException(status_code=422, detail=f"Unknown connection type: {type_name!r}")
+
+    try:
+        config = definition.config_model.model_validate(config_dict)
+    except Exception as e:
+        return TestConnectionResponse(success=False, message=f"Invalid config: {e}")
+
+    result = definition.test_connection(config)
+    return TestConnectionResponse(success=result.success, message=result.message)
+
+
+@app.delete("/connections/{name}", status_code=204)
+def delete_connection_endpoint(name: str) -> None:
+    if not delete_connection(name):
+        raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
 
 
 @app.get("/runs/{run_id}", response_model=RunStatusResponse)

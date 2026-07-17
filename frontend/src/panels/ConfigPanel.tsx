@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { resolveSlots } from "../api/client";
 import type { JsonSchemaProperty, SlotInfo } from "../api/types";
 import type { GenericFlowNode } from "../canvas/GenericNode";
+import { ConnectionPicker } from "./ConnectionPicker";
+import { renderPrimitiveField } from "./fieldRenderers";
+import { ModelField } from "./ModelField";
 
 interface ConfigPanelProps {
   node: GenericFlowNode;
@@ -69,7 +72,7 @@ export function ConfigPanel({ node, onConfigChange }: ConfigPanelProps) {
       {Object.entries(properties).map(([name, propSchema]) => (
         <div key={name} className="config-panel__field">
           <label htmlFor={`field-${name}`}>{propSchema.title ?? name}</label>
-          {renderField(name, propSchema, draft[name], setField)}
+          {renderField(name, propSchema, draft[name], setField, draft)}
         </div>
       ))}
       {error && <div className="config-panel__error">{error}</div>}
@@ -80,11 +83,22 @@ export function ConfigPanel({ node, onConfigChange }: ConfigPanelProps) {
   );
 }
 
+// `function_source`, `connection`, and `model` are the deliberate per-
+// field-name special cases (spec-005 §7, spec-006 §4/§9): a real multi-line
+// editor, a named-connection picker, and (when the selected connection
+// supports it) a live model dropdown, instead of a generic single-line
+// input, since all three are foreseeable UX problems worth solving
+// directly. Everything else falls through to the shared type-driven
+// renderer. `draft` (the whole in-progress config, not just this field's
+// value) is threaded through so `model` can read the sibling `connection`
+// field -- a small, general widening rather than a model-specific hack, so
+// any future field needing cross-field context gets it for free.
 function renderField(
   name: string,
   propSchema: JsonSchemaProperty,
   value: unknown,
   setField: (name: string, value: unknown) => void,
+  draft: Record<string, unknown>,
 ) {
   if (name === "function_source") {
     return (
@@ -97,61 +111,24 @@ function renderField(
     );
   }
 
-  if (propSchema.type === "boolean") {
+  if (name === "connection") {
     return (
-      <input
-        id={`field-${name}`}
-        type="checkbox"
-        checked={Boolean(value)}
-        onChange={(e) => setField(name, e.target.checked)}
+      <ConnectionPicker
+        value={typeof value === "string" ? value : undefined}
+        onChange={(connectionName) => setField(name, connectionName)}
       />
     );
   }
 
-  if (propSchema.type === "integer" || propSchema.type === "number") {
+  if (name === "model") {
     return (
-      <input
-        id={`field-${name}`}
-        type="number"
-        value={typeof value === "number" ? value : ""}
-        onChange={(e) =>
-          setField(name, e.target.value === "" ? undefined : Number(e.target.value))
-        }
+      <ModelField
+        value={value}
+        onChange={(v) => setField(name, v)}
+        connectionName={typeof draft.connection === "string" ? draft.connection : undefined}
       />
     );
   }
 
-  if (propSchema.type === "string") {
-    return (
-      <input
-        id={`field-${name}`}
-        type="text"
-        value={typeof value === "string" ? value : ""}
-        onChange={(e) => setField(name, e.target.value)}
-      />
-    );
-  }
-
-  // object/array/$ref (e.g. loop's nested sub_graph, llm_call's
-  // provider_options) -- raw JSON fallback. A proper nested editor for a
-  // whole sub-graph is explicitly canvas-later scope (spec-005 §3: loop
-  // sub-graphs shown as a single node with a config panel for MVP), and a
-  // flattened/raw view is this project's established MVP convention
-  // elsewhere (spec-005 §7 for nested trace display).
-  const textValue =
-    value === undefined ? "" : typeof value === "string" ? value : JSON.stringify(value, null, 2);
-  return (
-    <textarea
-      id={`field-${name}`}
-      className="config-panel__json-field"
-      defaultValue={textValue}
-      onBlur={(e) => {
-        try {
-          setField(name, JSON.parse(e.target.value));
-        } catch {
-          // leave prior value in place until the text is valid JSON again
-        }
-      }}
-    />
-  );
+  return renderPrimitiveField(name, propSchema, value, setField);
 }

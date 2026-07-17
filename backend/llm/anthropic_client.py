@@ -4,16 +4,16 @@ from backend.llm.client import LLMResponse
 
 
 class AnthropicLLMClient:
-    """Talks to the real Claude API. Constructed lazily by the provider
-    registry (backend/llm/providers.py) -- only when a node actually needs
-    it and no client was injected via ExecutionContext.resources -- so
-    graphs without an anthropic-provider llm_call node (or tests injecting
-    a fake) never require ANTHROPIC_API_KEY."""
+    """Talks to the real Claude API. Constructed by the `anthropic`
+    connection type (backend/connections/anthropic_connection.py) -- only
+    when a graph actually resolves an anthropic-typed connection -- so
+    graphs that don't reference one (or tests injecting a fake) never
+    require ANTHROPIC_API_KEY."""
 
-    def __init__(self) -> None:
+    def __init__(self, api_key: str | None = None) -> None:
         import anthropic
 
-        self._client = anthropic.Anthropic()
+        self._client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
 
     def complete(
         self, *, model: str, system_prompt: str, prompt: str, max_tokens: int

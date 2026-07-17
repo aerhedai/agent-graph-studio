@@ -9,7 +9,7 @@ from conftest import FIXTURES_DIR
 
 
 class _FakeAnthropicLLMClient:
-    def __init__(self) -> None:
+    def __init__(self, api_key: str | None = None) -> None:
         pass
 
     def complete(self, *, model, system_prompt, prompt, max_tokens):
@@ -17,10 +17,15 @@ class _FakeAnthropicLLMClient:
 
 
 def test_cli_runs_valid_graph_and_prints_trace(capsys, monkeypatch):
-    # llm_call's execute() dispatches through backend.llm.providers, which does a
-    # fresh `backend.llm.anthropic_client.AnthropicLLMClient` lookup at call time --
-    # patch the module attribute so the fake is picked up, keeping this test offline.
+    # The anthropic connection type's build_client() does a fresh
+    # `backend.llm.anthropic_client.AnthropicLLMClient` lookup at call time --
+    # patch the module attribute so the fake is picked up, keeping this test
+    # offline. valid_linear.json's llm_call node references "test-connection",
+    # so the store needs a matching (anthropic-typed) entry.
+    from backend.connections.store import add_connection
+
     monkeypatch.setattr(anthropic_client_module, "AnthropicLLMClient", _FakeAnthropicLLMClient)
+    add_connection("test-connection", "anthropic", {"api_key": "unused-in-tests"})
 
     exit_code = main([str(FIXTURES_DIR / "valid_linear.json")])
 

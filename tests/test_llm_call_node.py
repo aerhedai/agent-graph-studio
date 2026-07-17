@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pytest
 
-import backend.llm.anthropic_client as anthropic_client_module
 from backend.execution.errors import NodeExecutionError
 from backend.execution.types import ExecutionContext
 from backend.llm.client import LLMResponse
@@ -18,9 +17,11 @@ def _node(config: dict) -> NodeSpec:
 def test_llm_call_maps_config_and_returns_response():
     client = FakeLLMClient(response=LLMResponse(text="hi there", input_tokens=5, output_tokens=7))
     ctx = ExecutionContext(
-        node=_node({"model": "claude-opus-4-8", "system_prompt": "be nice", "max_tokens": 50}),
+        node=_node(
+            {"connection": "my-conn", "model": "claude-opus-4-8", "system_prompt": "be nice", "max_tokens": 50}
+        ),
         inputs={"prompt": "hello"},
-        resources={"llm_client": client},
+        resources={"connections": {"my-conn": client}},
     )
 
     result = execute_llm_call(ctx)
@@ -36,92 +37,32 @@ def test_llm_call_maps_config_and_returns_response():
 def test_llm_call_wraps_client_exception_as_node_execution_error():
     client = FailingLLMClient(RuntimeError("boom"))
     ctx = ExecutionContext(
-        node=_node({"model": "claude-opus-4-8", "max_tokens": 50}),
+        node=_node({"connection": "my-conn", "model": "claude-opus-4-8", "max_tokens": 50}),
         inputs={"prompt": "hello"},
-        resources={"llm_client": client},
+        resources={"connections": {"my-conn": client}},
     )
 
     with pytest.raises(NodeExecutionError):
         execute_llm_call(ctx)
 
 
-def test_llm_call_constructs_default_anthropic_client_when_none_injected(monkeypatch):
-    calls = []
-
-    class _StubAnthropicLLMClient:
-        def __init__(self) -> None:
-            calls.append("constructed")
-
-        def complete(self, **kwargs) -> LLMResponse:
-            return LLMResponse(text="default client reply", input_tokens=1, output_tokens=1)
-
-    monkeypatch.setattr(anthropic_client_module, "AnthropicLLMClient", _StubAnthropicLLMClient)
-
+def test_llm_call_raises_node_execution_error_when_connection_not_resolved():
+    # Defensive fallback only -- in production validate_graph()'s
+    # missing_connection rule + resolve_connections() already guarantee
+    # this never happens by the time run_graph executes.
     ctx = ExecutionContext(
-        node=_node({"model": "claude-opus-4-8", "max_tokens": 50}),
+        node=_node({"connection": "not-resolved", "model": "claude-opus-4-8", "max_tokens": 50}),
         inputs={"prompt": "hello"},
-        resources={},
-    )
-
-    result = execute_llm_call(ctx)
-
-    assert calls == ["constructed"]
-    assert result.outputs == {"response": "default client reply"}
-
-
-def test_llm_call_wraps_default_client_construction_failure_as_node_execution_error(monkeypatch):
-    class _BrokenAnthropicLLMClient:
-        def __init__(self) -> None:
-            raise RuntimeError("no API key configured")
-
-    monkeypatch.setattr(anthropic_client_module, "AnthropicLLMClient", _BrokenAnthropicLLMClient)
-
-    ctx = ExecutionContext(
-        node=_node({"model": "claude-opus-4-8", "max_tokens": 50}),
-        inputs={"prompt": "hello"},
-        resources={},
+        resources={"connections": {}},
     )
 
     with pytest.raises(NodeExecutionError):
         execute_llm_call(ctx)
 
 
-def test_llm_call_dispatches_to_ollama_provider_when_selected(monkeypatch):
-    import backend.llm.ollama_client as ollama_client_module
-
-    calls = []
-
-    class _StubOllamaLLMClient:
-        def __init__(self, host: str) -> None:
-            calls.append(host)
-
-        def complete(self, **kwargs) -> LLMResponse:
-            return LLMResponse(text="ollama reply", input_tokens=2, output_tokens=3)
-
-    monkeypatch.setattr(ollama_client_module, "OllamaLLMClient", _StubOllamaLLMClient)
-
+def test_llm_call_raises_node_execution_error_when_no_connections_resource_at_all():
     ctx = ExecutionContext(
-        node=_node(
-            {
-                "provider": "ollama",
-                "model": "llama3.2",
-                "max_tokens": 50,
-                "provider_options": {"host": "http://example.internal:11434"},
-            }
-        ),
-        inputs={"prompt": "hello"},
-        resources={},
-    )
-
-    result = execute_llm_call(ctx)
-
-    assert calls == ["http://example.internal:11434"]
-    assert result.outputs == {"response": "ollama reply"}
-
-
-def test_llm_call_unknown_provider_raises_node_execution_error():
-    ctx = ExecutionContext(
-        node=_node({"provider": "not-a-real-provider", "model": "x", "max_tokens": 50}),
+        node=_node({"connection": "my-conn", "model": "claude-opus-4-8", "max_tokens": 50}),
         inputs={"prompt": "hello"},
         resources={},
     )

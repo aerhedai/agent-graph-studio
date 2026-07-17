@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import ValidationError as PydanticValidationError
 
 from backend.registry.base import NodeRegistry, effective_inputs, effective_outputs
@@ -146,6 +148,37 @@ def check_cycles(graph: GraphSpec, valid_edges: list[EdgeSpec]) -> list[Validati
             )
         ]
     return []
+
+
+def check_missing_connections(
+    graph: GraphSpec, connections_path: Path | None = None
+) -> list[ValidationIssue]:
+    """Spec-006 §6: a node referencing a connection name not present in the
+    local store must produce a clear, specific error naming it -- reusing
+    the exact same "aggregate issues, raise GraphValidationError" mechanism
+    every other rule already has, rather than a bespoke exception path.
+    Generic across node types: any node whose config has a "connection" key
+    is checked, not just llm_call.
+    """
+    from backend.connections.store import get_connection
+
+    issues: list[ValidationIssue] = []
+    known: dict[str, bool] = {}
+    for node in graph.nodes:
+        name = node.config.get("connection") if isinstance(node.config, dict) else None
+        if not isinstance(name, str):
+            continue
+        if name not in known:
+            known[name] = get_connection(name, path=connections_path) is not None
+        if not known[name]:
+            issues.append(
+                ValidationIssue(
+                    "missing_connection",
+                    node.id,
+                    f"references connection '{name}' which isn't configured on this machine",
+                )
+            )
+    return issues
 
 
 def check_config_schema(
