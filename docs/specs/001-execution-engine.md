@@ -122,5 +122,5 @@ A graph is invalid (must be rejected before execution) if:
 
 ## 8. Open questions for review before implementation
 
-- Should `conditional_branch` support more than two branches in a later version, or is true/false sufficient for MVP? (Recommend: two branches only for MVP, revisit in a future spec.)
-- Where does the CLI read graph JSON from — local file path only for MVP, or should it accept stdin too?
+- Should `conditional_branch` support more than two branches in a later version, or is true/false sufficient for MVP? (Recommend: two branches only for MVP, revisit in a future spec.) RESOLVED - two branhes only for MVP
+- Where does the CLI read graph JSON from — local file path only for MVP, or should it accept stdin too? RESOLVED - file path only

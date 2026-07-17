@@ -38,7 +38,7 @@ from backend.api.schemas import (
 )
 from backend.connections.base import default_connection_registry
 from backend.connections.errors import ConnectionNotFoundError, DuplicateConnectionError
-from backend.connections.resolver import resolve_connections
+from backend.connections.resolver import resolve_connection_profiles, resolve_connections
 from backend.connections.store import add_connection, delete_connection, get_connection, list_connections
 from backend.registry.base import default_registry, effective_inputs, effective_outputs
 from backend.schema.models import GraphSpec, NodeSpec
@@ -141,6 +141,7 @@ def submit_run(graph: GraphSpec, background_tasks: BackgroundTasks) -> RunSubmit
 
     try:
         resolved_connections = resolve_connections(graph)
+        resolved_connection_profiles = resolve_connection_profiles(graph)
     except ConnectionNotFoundError as e:
         # Only reachable via a race (store changed between validate_graph()
         # and here) -- validate_graph()'s missing_connection rule already
@@ -150,7 +151,10 @@ def submit_run(graph: GraphSpec, background_tasks: BackgroundTasks) -> RunSubmit
     run_id = str(uuid4())
     runs.create_run(run_id)
     background_tasks.add_task(
-        runs.execute_run, run_id, graph, {"connections": resolved_connections}
+        runs.execute_run,
+        run_id,
+        graph,
+        {"connections": resolved_connections, "connection_profiles": resolved_connection_profiles},
     )
     return RunSubmitResponse(run_id=run_id, status="running")
 
@@ -172,6 +176,7 @@ def list_connection_types() -> list[ConnectionTypeInfo]:
                 category=definition.category,
                 config_schema=definition.config_model.model_json_schema(),
                 supports_model_listing=definition.list_models is not None,
+                supports_tool_calling=definition.complete_with_tools is not None,
             )
         )
     return infos

@@ -57,6 +57,11 @@ class ConnectionTypeInfo(BaseModel):
     """spec-006 §9: whether GET /connections/{name}/models is meaningful for
     connections of this type -- lets the frontend decide up front whether to
     render the llm_call model field as a dropdown, without trial-and-error."""
+    supports_tool_calling: bool
+    """spec-008 §5: whether this connection type can be used by an `agent`
+    node. Computed from `complete_with_tools is not None`, same precedent
+    as supports_model_listing -- no separate capability flag to drift out
+    of sync with the actual callable."""
 
 
 class ConnectionInfo(BaseModel):

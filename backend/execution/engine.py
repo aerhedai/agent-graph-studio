@@ -215,9 +215,25 @@ def run_graph(
     running loop on the current thread -- not a concern for the synchronous
     CLI or for `loop`'s recursive call, which runs inside an
     asyncio.to_thread worker with no loop of its own.
+
+    `resources["nodes_by_id"]` is the one deliberate exception to "the
+    engine never populates resources, only passes through what the caller
+    gave it" (spec-008, ADR-008): the `agent` node type needs to look up a
+    sibling node's NodeSpec by id, to invoke a tool directly (bypassing
+    edge-based input gathering entirely -- there's no static edge to
+    resolve for a tool call the model decides on at runtime). This is data
+    the engine already computes for its own scheduling every run, just also
+    exposed to node bodies; it carries no edges, so it can't be used to
+    route around the normal edge-based flow for anything except an
+    explicit, direct execute() call a node chooses to make. Set here (not
+    by the CLI/API caller) so it's always correct for the graph actually
+    being run at each level -- including inside `loop`'s recursive
+    run_graph() call, which reuses the outer `resources` dict; without this
+    living here, a nested loop iteration would see the *outer* graph's
+    nodes_by_id instead of its own sub_graph's.
     """
     validate_graph(graph, registry)
-    resources = resources or {}
+    resources = {**(resources or {}), "nodes_by_id": {n.id: n for n in graph.nodes}}
     run_id = run_id or str(uuid4())
     return asyncio.run(
         _run_graph_async(graph, registry, resources, run_id, on_round_start, on_trace_record)
