@@ -1,0 +1,54 @@
+{
+  "version": "0.1",
+  "nodes": [
+    {
+      "id": "question",
+      "type": "text_input",
+      "config": {"value": "What is Agent Graph Studio?"}
+    },
+    {
+      "id": "search",
+      "type": "vector_search",
+      "config": {
+        "connection": "rag-demo-store",
+        "embedding_model_connection": "my-pc-ollama-canvas",
+        "embedding_model": "nomic-embed-text",
+        "top_k": 3
+      }
+    },
+    {
+      "id": "question_again",
+      "type": "text_input",
+      "config": {"value": "What is Agent Graph Studio?"}
+    },
+    {
+      "id": "build_prompt",
+      "type": "code",
+      "config": {
+        "function_source": "def build_prompt(context, question):\n    return f\"Answer using ONLY this context:\\n\\n{context}\\n\\nQuestion: {question}\""
+      }
+    },
+    {
+      "id": "answer",
+      "type": "llm_call",
+      "config": {
+        "connection": "my-pc-ollama-canvas",
+        "model": "qwen2.5:14b",
+        "system_prompt": "You are a helpful assistant. Only use the provided context to answer.",
+        "max_tokens": 200
+      }
+    },
+    {
+      "id": "final",
+      "type": "text_output",
+      "config": {}
+    }
+  ],
+  "edges": [
+    {"from": {"node": "question", "slot": "text"}, "to": {"node": "search", "slot": "query"}},
+    {"from": {"node": "search", "slot": "results"}, "to": {"node": "build_prompt", "slot": "context"}},
+    {"from": {"node": "question_again", "slot": "text"}, "to": {"node": "build_prompt", "slot": "question"}},
+    {"from": {"node": "build_prompt", "slot": "result"}, "to": {"node": "answer", "slot": "prompt"}},
+    {"from": {"node": "answer", "slot": "response"}, "to": {"node": "final", "slot": "text"}}
+  ]
+}

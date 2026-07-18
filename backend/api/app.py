@@ -198,6 +198,7 @@ def list_connection_types() -> list[ConnectionTypeInfo]:
                 config_schema=definition.config_model.model_json_schema(),
                 supports_model_listing=definition.list_models is not None,
                 supports_tool_calling=definition.complete_with_tools is not None,
+                supports_embedding=definition.embed is not None,
             )
         )
     return infos
@@ -287,6 +288,24 @@ def test_connection_endpoint(name: str, request: TestConnectionRequest) -> TestC
 def delete_connection_endpoint(name: str) -> None:
     if not delete_connection(name):
         raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
+
+
+@app.delete("/connections/{name}/vectors", status_code=204)
+def clear_connection_vectors(name: str) -> None:
+    """spec-011 §7: clears a vector_store connection's stored chunks without
+    deleting the connection profile itself -- avoids needing to delete and
+    recreate an entire connection just to start over during testing."""
+    profile = get_connection(name)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
+    if profile.type != "vector_store":
+        raise HTTPException(
+            status_code=422, detail=f"Connection '{name}' is not a vector_store connection"
+        )
+    definition = default_connection_registry.get(profile.type)
+    config = definition.config_model.model_validate(profile.config)
+    client = definition.build_client(config)
+    client.clear()
 
 
 @app.get("/runs", response_model=RunListResponse)

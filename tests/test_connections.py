@@ -12,7 +12,11 @@ from backend.connections.base import (
     ToolDefinition,
 )
 from backend.connections.errors import ConnectionNotFoundError, DuplicateConnectionError
-from backend.connections.resolver import resolve_connection_profiles, resolve_connections
+from backend.connections.resolver import (
+    connection_reference_names,
+    resolve_connection_profiles,
+    resolve_connections,
+)
 from backend.connections.store import add_connection, connections_path, delete_connection, get_connection, list_connections
 from backend.schema.loader import parse_graph_json
 from pydantic import BaseModel
@@ -496,3 +500,132 @@ def test_anthropic_complete_with_tools_translates_tool_result_messages(monkeypat
         "role": "user",
         "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "42"}],
     }
+
+
+# --- embed capability + connection_reference_names convention (spec-011) ----
+
+
+def test_definition_without_embed_defaults_to_none():
+    dummy_config = type("DummyConfig4", (BaseModel,), {})
+    definition = ConnectionDefinition(
+        type_name="dummy4",
+        category="cloud",
+        config_model=dummy_config,
+        build_client=lambda config: object(),
+        test_connection=lambda config: ConnectionTestResult(success=True, message="ok"),
+    )
+    assert definition.embed is None
+
+
+def test_default_connection_registry_has_vector_store_and_ollama_embed():
+    from backend.connections.base import default_connection_registry
+
+    assert "vector_store" in default_connection_registry.all_types()
+    assert default_connection_registry.get("vector_store").category == "local"
+    assert default_connection_registry.get("ollama").embed is not None
+    assert default_connection_registry.get("anthropic").embed is None
+
+
+def test_ollama_embed_returns_real_vector(monkeypatch):
+    import io
+    import json as json_module
+
+    import backend.connections.ollama_connection as ollama_connection_module
+
+    class _FakeResponse(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    captured_payload = {}
+
+    def fake_urlopen(request, timeout=120):
+        captured_payload.update(json_module.loads(request.data.decode("utf-8")))
+        return _FakeResponse(json_module.dumps({"embedding": [0.1, 0.2, 0.3]}).encode("utf-8"))
+
+    monkeypatch.setattr(ollama_connection_module.urllib.request, "urlopen", fake_urlopen)
+
+    config = ollama_connection_module.OllamaConnectionConfig(host="localhost", port=11434)
+    result = ollama_connection_module.embed(config, "nomic-embed-text", "hello world")
+
+    assert result == [0.1, 0.2, 0.3]
+    assert captured_payload == {"model": "nomic-embed-text", "prompt": "hello world"}
+
+
+def test_connection_reference_names_matches_exact_and_suffix_keys():
+    config = {
+        "connection": "vs1",
+        "embedding_model_connection": "emb1",
+        "model": "not-a-connection-field",
+        "other_field": 42,
+    }
+    assert set(connection_reference_names(config)) == {"vs1", "emb1"}
+
+
+def test_connection_reference_names_ignores_non_string_values():
+    assert connection_reference_names({"connection": 123, "reranker_connection": None}) == []
+
+
+def test_resolve_connections_resolves_a_suffixed_connection_key():
+    add_connection("emb-conn", "ollama", {"host": "localhost", "port": 11434})
+
+    graph = parse_graph_json(
+        json.dumps(
+            {
+                "version": "0.1",
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "ingest_document",
+                        "config": {
+                            "connection": "vs-conn-not-registered-yet",
+                            "embedding_model_connection": "emb-conn",
+                            "embedding_model": "nomic-embed-text",
+                            "chunk_size": 100,
+                            "chunk_overlap": 10,
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+    )
+    add_connection("vs-conn-not-registered-yet", "vector_store", {"path": "/tmp/does-not-matter.db"})
+
+    resolved = resolve_connections(graph)
+    assert set(resolved.keys()) == {"vs-conn-not-registered-yet", "emb-conn"}
+
+
+def test_check_missing_connections_detects_a_missing_suffixed_connection_key():
+    from backend.validation.rules import check_missing_connections
+
+    graph = parse_graph_json(
+        json.dumps(
+            {
+                "version": "0.1",
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "type": "ingest_document",
+                        "config": {
+                            "connection": "vs-missing",
+                            "embedding_model_connection": "emb-missing",
+                            "embedding_model": "nomic-embed-text",
+                            "chunk_size": 100,
+                            "chunk_overlap": 10,
+                        },
+                    }
+                ],
+                "edges": [],
+            }
+        )
+    )
+
+    issues = check_missing_connections(graph)
+
+    missing_names = {i.message for i in issues}
+    assert any("vs-missing" in m for m in missing_names)
+    assert any("emb-missing" in m for m in missing_names)
+    assert len(issues) == 2

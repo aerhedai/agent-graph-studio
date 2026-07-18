@@ -10,6 +10,7 @@ from backend.nodes import (  # noqa: F401
     code,
     conditional_branch,
     fan_out,
+    ingest_document,
     llm_call,
     loop,
     mcp_call,
@@ -18,5 +19,6 @@ from backend.nodes import (  # noqa: F401
     text_input,
     text_output,
     uppercase_text,
+    vector_search,
     webhook_trigger,
 )
