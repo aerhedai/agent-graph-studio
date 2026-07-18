@@ -14,7 +14,9 @@ from backend.nodes import (  # noqa: F401
     loop,
     mcp_call,
     merge,
+    schedule_trigger,
     text_input,
     text_output,
     uppercase_text,
+    webhook_trigger,
 )

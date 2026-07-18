@@ -88,3 +88,21 @@ class TestConnectionRequest(BaseModel):
 class TestConnectionResponse(BaseModel):
     success: bool
     message: str
+
+
+class TriggerInfo(BaseModel):
+    node_id: str
+    type: str  # "schedule_trigger" | "webhook_trigger"
+    endpoint_or_schedule: str
+    """The node's cron expression (schedule_trigger) or its derived webhook
+    URL path (webhook_trigger) -- spec-009 §5."""
+
+
+class ActivateGraphResponse(BaseModel):
+    status: str
+    triggers: list[TriggerInfo]
+
+
+class ActiveGraphInfo(BaseModel):
+    graph_id: str
+    triggers: list[TriggerInfo]

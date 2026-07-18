@@ -1,0 +1,16 @@
+{
+  "version": "0.1",
+  "nodes": [
+    { "id": "trigger", "type": "schedule_trigger", "config": { "cron": "*/1 * * * *" } },
+    {
+      "id": "logger",
+      "type": "code",
+      "config": {
+        "function_source": "def run(ts):\n    with open(\"/tmp/schedule_trigger_demo.log\", \"a\") as f:\n        f.write(ts + \"\\n\")\n    return ts"
+      }
+    }
+  ],
+  "edges": [
+    { "from": { "node": "trigger", "slot": "fired_at" }, "to": { "node": "logger", "slot": "ts" } }
+  ]
+}
