@@ -15,6 +15,7 @@ reasoned about per-route.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -33,8 +34,10 @@ from backend.api.schemas import (
     NodeTypeInfo,
     ResolveSlotsRequest,
     ResolveSlotsResponse,
+    RunListResponse,
     RunStatusResponse,
     RunSubmitResponse,
+    RunSummary,
     SlotInfo,
     TestConnectionRequest,
     TestConnectionResponse,
@@ -46,6 +49,7 @@ from backend.connections.resolver import resolve_connection_profiles, resolve_co
 from backend.connections.store import add_connection, delete_connection, get_connection, list_connections
 from backend.registry.base import default_registry, effective_inputs, effective_outputs
 from backend.schema.models import GraphSpec, NodeSpec
+from backend.storage import runs_store
 from backend.triggers import registry as trigger_registry
 from backend.triggers import runner as trigger_runner
 from backend.triggers import scheduler as trigger_scheduler
@@ -121,7 +125,9 @@ def resolve_node_slots(type_name: str, request: ResolveSlotsRequest) -> ResolveS
 
 
 @app.post("/runs", response_model=RunSubmitResponse, status_code=202)
-def submit_run(graph: GraphSpec, background_tasks: BackgroundTasks) -> RunSubmitResponse:
+def submit_run(
+    graph: GraphSpec, background_tasks: BackgroundTasks, graph_id: str | None = None
+) -> RunSubmitResponse:
     """Validates synchronously (reusing the exact backend validate_graph(),
     zero duplicated logic) and returns immediately; the run itself executes
     in a background worker thread. Necessary given SPEC-004's loops could run
@@ -134,6 +140,14 @@ def submit_run(graph: GraphSpec, background_tasks: BackgroundTasks) -> RunSubmit
     resolved to a real client (backend/connections/resolver.py) and handed
     to the run as `resources={"connections": ...}`, exactly the same opaque
     resources bag mechanism the engine has supported since SPEC-002.
+
+    `graph_id` (spec-010, optional query param): GraphSpec has no
+    server-side identity anywhere in this codebase -- POST /runs takes a raw
+    graph body, same as always. Unlike an activated graph (whose graph_id is
+    a required part of its activation URL, spec-009), a manual run's
+    graph_id is caller-chosen and optional; omitted, it's stored as null in
+    the run history rather than invented. See docs/specs/010-run-persistence.md
+    §8 for why this was resolved as an explicit param rather than assumed.
     """
     try:
         validate_graph(graph)
@@ -156,7 +170,7 @@ def submit_run(graph: GraphSpec, background_tasks: BackgroundTasks) -> RunSubmit
         raise HTTPException(status_code=422, detail=str(e)) from e
 
     run_id = str(uuid4())
-    runs.create_run(run_id)
+    runs.create_run(run_id, graph_id=graph_id, trigger_source="manual")
     background_tasks.add_task(
         runs.execute_run,
         run_id,
@@ -275,18 +289,86 @@ def delete_connection_endpoint(name: str) -> None:
         raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
 
 
+@app.get("/runs", response_model=RunListResponse)
+def list_runs(
+    graph_id: str | None = None,
+    status: str | None = None,
+    trigger_source: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> RunListResponse:
+    """spec-010: paginated run history, read exclusively from the durable
+    SQLite store (backend/storage/runs_store.py) -- listing is inherently
+    about history/browsing, not the live "still running" hot path that
+    GET /runs/{run_id} optimizes for, so there's no in-memory fallback to
+    reason about here. Summaries only (no trace/result) per spec §5."""
+    rows, total = runs_store.list_run_records(
+        graph_id=graph_id,
+        status=status,
+        trigger_source=trigger_source,
+        limit=limit,
+        offset=offset,
+    )
+    return RunListResponse(
+        runs=[
+            RunSummary(
+                run_id=r.run_id,
+                graph_id=r.graph_id,
+                status=r.status,
+                trigger_source=r.trigger_source,
+                started_at=r.started_at,
+                finished_at=r.finished_at,
+            )
+            for r in rows
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+
+
 @app.get("/runs/{run_id}", response_model=RunStatusResponse)
 def get_run(run_id: str) -> RunStatusResponse:
+    """spec-010: falls back to the durable SQLite store when a run is no
+    longer in the in-memory `_runs` dict (e.g. the API process was
+    restarted since it ran) -- this is what makes a run's result queryable
+    long after the process that ran it. The in-memory path stays primary
+    (checked first) since it's the only place `running_node_ids` (live
+    per-node progress) exists at all; a persisted-only record has none to
+    report, since spec-010's write point is after run_graph returns, not
+    during."""
     record = runs.get_run_snapshot(run_id)
-    if record is None:
+    if record is not None:
+        return RunStatusResponse(
+            run_id=record.run_id,
+            status=record.status,
+            graph_id=record.graph_id,
+            trigger_source=record.trigger_source,
+            running_node_ids=record.running_node_ids,
+            trace=record.trace,
+            result=record.result,
+            error=record.error,
+        )
+
+    row = runs_store.get_run_record(run_id)
+    if row is None:
         raise HTTPException(status_code=404, detail=f"Unknown run_id: {run_id!r}")
+
+    result: dict[str, Any] | None = None
+    trace: list[Any] = []
+    if row.result_json is not None:
+        parsed = json.loads(row.result_json)
+        result = parsed.get("result")
+        trace = parsed.get("trace", [])
     return RunStatusResponse(
-        run_id=record.run_id,
-        status=record.status,
-        running_node_ids=record.running_node_ids,
-        trace=record.trace,
-        result=record.result,
-        error=record.error,
+        run_id=row.run_id,
+        status=row.status,
+        graph_id=row.graph_id,
+        trigger_source=row.trigger_source,
+        running_node_ids=[],
+        trace=trace,
+        result=result,
+        error=row.error,
     )
 
 
@@ -318,7 +400,9 @@ def _make_webhook_handler(graph_id: str, node_id: str):
     # needs no `await request.json()` to stay a plain sync callable.
     def webhook_handler(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, str]:
         try:
-            run_id = trigger_runner.fire(graph_id, node_id, payload=payload)
+            run_id = trigger_runner.fire(
+                graph_id, node_id, payload=payload, trigger_source="webhook"
+            )
         except trigger_runner.GraphNotActiveError as e:
             raise HTTPException(status_code=404, detail=str(e)) from e
         return {"run_id": run_id}

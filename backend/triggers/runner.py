@@ -29,11 +29,21 @@ class GraphNotActiveError(Exception):
         self.graph_id = graph_id
 
 
-def fire(graph_id: str, node_id: str, payload: dict[str, Any] | None = None) -> str:
+def fire(
+    graph_id: str,
+    node_id: str,
+    payload: dict[str, Any] | None = None,
+    trigger_source: str = "schedule",
+) -> str:
     """Starts a real run in a background thread and returns its run_id
     immediately -- same "don't hold the caller open for the run's duration"
     shape as `POST /runs` (spec-005 §4), whether the caller is a webhook
-    HTTP handler or a scheduler tick with no HTTP request behind it at all."""
+    HTTP handler or a scheduler tick with no HTTP request behind it at all.
+
+    `trigger_source` (spec-010) defaults to "schedule" since that's the
+    original/primary caller shape (a cron tick has no other signal to carry
+    its own type); the webhook handler (backend/api/app.py) passes
+    trigger_source="webhook" explicitly at its own call site."""
     active = get_active(graph_id)
     if active is None:
         raise GraphNotActiveError(graph_id)
@@ -49,7 +59,7 @@ def fire(graph_id: str, node_id: str, payload: dict[str, Any] | None = None) -> 
         resources["trigger_payloads"] = {node_id: payload}
 
     run_id = str(uuid4())
-    runs.create_run(run_id)
+    runs.create_run(run_id, graph_id=graph_id, trigger_source=trigger_source)
     thread = threading.Thread(
         target=runs.execute_run, args=(run_id, graph, resources), daemon=True
     )
