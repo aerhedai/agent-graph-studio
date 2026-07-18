@@ -1,0 +1,16 @@
+{
+  "version": "0.1",
+  "nodes": [
+    { "id": "trigger", "type": "webhook_trigger", "config": {} },
+    {
+      "id": "greet",
+      "type": "code",
+      "config": {
+        "function_source": "def run(raw):\n    data = __import__('json').loads(raw)\n    return f\"hello, {data['name']}! message: {data['message']}\""
+      }
+    }
+  ],
+  "edges": [
+    { "from": { "node": "trigger", "slot": "payload" }, "to": { "node": "greet", "slot": "raw" } }
+  ]
+}

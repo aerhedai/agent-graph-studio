@@ -15,15 +15,18 @@ reasoned about per-route.
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Body, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 import backend.connections  # noqa: F401 -- import side effect registers every connection type
 import backend.nodes  # noqa: F401 -- import side effect registers every node type
 from backend.api import runs
 from backend.api.schemas import (
+    ActivateGraphResponse,
+    ActiveGraphInfo,
     ConnectionInfo,
     ConnectionTypeInfo,
     CreateConnectionRequest,
@@ -35,6 +38,7 @@ from backend.api.schemas import (
     SlotInfo,
     TestConnectionRequest,
     TestConnectionResponse,
+    TriggerInfo,
 )
 from backend.connections.base import default_connection_registry
 from backend.connections.errors import ConnectionNotFoundError, DuplicateConnectionError
@@ -42,6 +46,9 @@ from backend.connections.resolver import resolve_connection_profiles, resolve_co
 from backend.connections.store import add_connection, delete_connection, get_connection, list_connections
 from backend.registry.base import default_registry, effective_inputs, effective_outputs
 from backend.schema.models import GraphSpec, NodeSpec
+from backend.triggers import registry as trigger_registry
+from backend.triggers import runner as trigger_runner
+from backend.triggers import scheduler as trigger_scheduler
 from backend.validation.errors import GraphValidationError
 from backend.validation.validator import validate_graph
 
@@ -281,3 +288,123 @@ def get_run(run_id: str) -> RunStatusResponse:
         result=record.result,
         error=record.error,
     )
+
+
+# --- spec-009: trigger nodes (schedule + webhook) ---------------------------
+#
+# `graph_id` has no persisted identity anywhere else in this codebase (no
+# `id` field on GraphSpec, no server-side "save a graph" concept -- the
+# canvas's own save/load is a local file download/upload, per SPEC-005).
+# Rather than invent a whole new /graphs CRUD resource the spec never asked
+# for, POST /graphs/{graph_id}/activate carries the full GraphSpec as its
+# own request body: `graph_id` is caller-chosen, and the graph is cached in
+# `backend.triggers.registry` purely in-memory, for exactly as long as it's
+# active -- consistent with this spec's own explicitly-accepted "no
+# persistence across restarts" scope line (§3).
+
+
+def _webhook_path(graph_id: str, node_id: str) -> str:
+    return f"/webhooks/{graph_id}/{node_id}"
+
+
+def _to_schema_trigger(t: trigger_registry.TriggerRecord) -> TriggerInfo:
+    return TriggerInfo(node_id=t.node_id, type=t.type, endpoint_or_schedule=t.endpoint_or_schedule)
+
+
+def _make_webhook_handler(graph_id: str, node_id: str):
+    # Plain `def`, never `async def` -- same blanket policy as every other
+    # route in this module (see module docstring): FastAPI/Starlette parses
+    # `payload` before calling the handler regardless of sync/async, so this
+    # needs no `await request.json()` to stay a plain sync callable.
+    def webhook_handler(payload: dict[str, Any] = Body(default_factory=dict)) -> dict[str, str]:
+        try:
+            run_id = trigger_runner.fire(graph_id, node_id, payload=payload)
+        except trigger_runner.GraphNotActiveError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        return {"run_id": run_id}
+
+    return webhook_handler
+
+
+def _deactivate(graph_id: str) -> None:
+    trigger_scheduler.remove_jobs_for_graph(graph_id)
+    prefix = f"/webhooks/{graph_id}/"
+    app.router.routes = [
+        route for route in app.router.routes if not getattr(route, "path", "").startswith(prefix)
+    ]
+    trigger_registry.clear_active(graph_id)
+
+
+@app.post("/graphs/{graph_id}/activate", response_model=ActivateGraphResponse)
+def activate_graph(graph_id: str, graph: GraphSpec) -> ActivateGraphResponse:
+    """Registers a cron job per `schedule_trigger` node and a dynamic
+    webhook route per `webhook_trigger` node. Validates first via the exact
+    same validate_graph() every other entry point uses (422 with the same
+    issues shape on failure). Re-activating an already-active graph_id
+    replaces the prior registration outright rather than erroring --
+    activation is idempotent from the caller's perspective."""
+    try:
+        validate_graph(graph)
+    except GraphValidationError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=[
+                {"rule": issue.rule, "node_id": issue.node_id, "message": issue.message}
+                for issue in e.issues
+            ],
+        ) from e
+
+    if trigger_registry.get_active(graph_id) is not None:
+        _deactivate(graph_id)
+
+    triggers: list[trigger_registry.TriggerRecord] = []
+    try:
+        for node in graph.nodes:
+            if node.type == "schedule_trigger":
+                cron = node.config.get("cron", "")
+                try:
+                    trigger_scheduler.add_schedule_job(
+                        graph_id, node.id, cron, lambda gid=graph_id, nid=node.id: trigger_runner.fire(gid, nid)
+                    )
+                except ValueError as e:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Invalid cron expression for node '{node.id}': {e}",
+                    ) from e
+                triggers.append(
+                    trigger_registry.TriggerRecord(
+                        node_id=node.id, type="schedule_trigger", endpoint_or_schedule=cron
+                    )
+                )
+            elif node.type == "webhook_trigger":
+                path = _webhook_path(graph_id, node.id)
+                app.add_api_route(path, _make_webhook_handler(graph_id, node.id), methods=["POST"])
+                triggers.append(
+                    trigger_registry.TriggerRecord(
+                        node_id=node.id, type="webhook_trigger", endpoint_or_schedule=path
+                    )
+                )
+    except HTTPException:
+        _deactivate(graph_id)  # don't leave a half-registered graph behind
+        raise
+
+    trigger_registry.set_active(graph_id, graph, triggers)
+    return ActivateGraphResponse(status="active", triggers=[_to_schema_trigger(t) for t in triggers])
+
+
+@app.post("/graphs/{graph_id}/deactivate")
+def deactivate_graph(graph_id: str) -> dict[str, str]:
+    if trigger_registry.get_active(graph_id) is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' is not active")
+    _deactivate(graph_id)
+    return {"status": "inactive"}
+
+
+@app.get("/graphs/active", response_model=list[ActiveGraphInfo])
+def list_active_graphs() -> list[ActiveGraphInfo]:
+    return [
+        ActiveGraphInfo(
+            graph_id=g.graph_id, triggers=[_to_schema_trigger(t) for t in g.triggers]
+        )
+        for g in trigger_registry.list_active()
+    ]
