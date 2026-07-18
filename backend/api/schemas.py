@@ -43,10 +43,36 @@ class RunSubmitResponse(BaseModel):
 class RunStatusResponse(BaseModel):
     run_id: str
     status: str  # "running" | "completed" | "failed"
+    graph_id: str | None = None
+    trigger_source: str = "manual"
+    """spec-010: which of manual/schedule/webhook started this run --
+    populated for every run going forward; may be absent/defaulted for a
+    run whose only surviving record predates this field (there are none in
+    practice, since this ships atomically with the runs table itself)."""
     running_node_ids: list[str]
     trace: list[TraceRecord]
     result: dict[str, Any] | None
     error: str | None
+
+
+class RunSummary(BaseModel):
+    """One row of a GET /runs listing -- no trace/result, per spec-010 §5's
+    "keep list responses light"; fetch GET /runs/{run_id} for the full
+    record."""
+
+    run_id: str
+    graph_id: str | None
+    status: str
+    trigger_source: str
+    started_at: str
+    finished_at: str | None
+
+
+class RunListResponse(BaseModel):
+    runs: list[RunSummary]
+    total: int
+    limit: int
+    offset: int
 
 
 class ConnectionTypeInfo(BaseModel):
