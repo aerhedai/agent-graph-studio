@@ -10,6 +10,7 @@ from backend.registry.base import (
     NodeRegistry,
     OutputSlotSpec,
     ResolveSlots,
+    SubNodeSlotSpec,
     default_registry,
 )
 
@@ -21,6 +22,9 @@ def register_node(
     config_model: type[BaseModel],
     result_slot: str | None = None,
     resolve_slots: ResolveSlots | None = None,
+    sub_node_slots: dict[str, SubNodeSlotSpec] | None = None,
+    sub_node_role: str | None = None,
+    resolve_slots_from_sub_node: str | None = None,
     registry: NodeRegistry = default_registry,
 ) -> Callable:
     """Decorator bundling a node type's input/output/config schema and its
@@ -35,6 +39,10 @@ def register_node(
     `resolve_slots`, if set, resolves this type's actual input/output slots
     per graph instance instead of using the fixed `inputs`/`outputs` above --
     for node types whose schema depends on their own config (e.g. `code`).
+
+    `sub_node_slots`/`sub_node_role`/`resolve_slots_from_sub_node` (spec-012
+    §4): the cluster-node pattern's registration-time capabilities -- see
+    NodeDefinition's own docstrings for each.
     """
 
     def decorator(execute_fn: Callable) -> Callable:
@@ -47,6 +55,9 @@ def register_node(
                 execute=execute_fn,
                 result_slot=result_slot,
                 resolve_slots=resolve_slots,
+                sub_node_slots=sub_node_slots,
+                sub_node_role=sub_node_role,
+                resolve_slots_from_sub_node=resolve_slots_from_sub_node,
             )
         )
         return execute_fn

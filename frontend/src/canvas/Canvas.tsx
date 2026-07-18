@@ -19,7 +19,13 @@ import { fetchNodeTypes, pollRun, submitRun } from "../api/client";
 import type { GraphSpec, NodeTypeInfo, RunStatusResponse } from "../api/types";
 import { graphSpecToNodesAndEdges, nodesAndEdgesToGraphSpec } from "../graph/serialize";
 import { NodeInspectorPanel } from "../panels/NodeInspectorPanel";
-import { GenericNode, type GenericFlowNode, type GenericNodeData, type NodeStatus } from "./GenericNode";
+import {
+  GenericNode,
+  SUB_NODE_HANDLE_ID,
+  type GenericFlowNode,
+  type GenericNodeData,
+  type NodeStatus,
+} from "./GenericNode";
 import { Palette } from "./Palette";
 import { slotTypesCompatible } from "./typeCompat";
 
@@ -92,6 +98,9 @@ function CanvasInner() {
         outputs: nodeTypeInfo.dynamic_schema ? [] : nodeTypeInfo.outputs,
         dynamicSchema: nodeTypeInfo.dynamic_schema,
         status: "pending",
+        subNodeSlots: nodeTypeInfo.sub_node_slots ?? null,
+        subNodeRole: nodeTypeInfo.sub_node_role ?? null,
+        resolveSlotsFromSubNode: nodeTypeInfo.resolve_slots_from_sub_node ?? null,
       };
       const newNode: GenericFlowNode = { id, type: "generic", position, data };
       setNodes((nds) => [...nds, newNode]);
@@ -109,11 +118,37 @@ function CanvasInner() {
   // own "validate at connection time, not just runtime" principle
   // (CLAUDE.md). Also enforces the data model's "one edge per input slot"
   // invariant, which the backend's own graph schema assumes.
+  //
+  // spec-012: a connection whose source is the reserved sub-node handle is
+  // a `sub_node`-kind attempt (e.g. wiring a `model` node into an `agent`'s
+  // `model` slot) -- validated against the target's declared sub_node_slots
+  // (slot exists, role compatible, cardinality not yet exceeded) instead of
+  // slotTypesCompatible, which only makes sense for typed data ports.
+  // Backstopped server-side by check_sub_node_edges either way (per this
+  // spec's own resolved open question: both, not either/or).
   const isValidConnection: IsValidConnection = useCallback(
     (connection) => {
       const sourceNode = nodes.find((n) => n.id === connection.source);
       const targetNode = nodes.find((n) => n.id === connection.target);
       if (!sourceNode || !targetNode) return false;
+
+      if (connection.sourceHandle === SUB_NODE_HANDLE_ID) {
+        const slot = targetNode.data.subNodeSlots?.[connection.targetHandle ?? ""];
+        if (!slot) return false;
+        if (slot.accepts_role !== null && sourceNode.data.subNodeRole !== slot.accepts_role) {
+          return false;
+        }
+        if (slot.cardinality !== "many") {
+          const alreadyFilled = edges.some(
+            (e) =>
+              e.target === connection.target &&
+              e.targetHandle === connection.targetHandle &&
+              e.sourceHandle === SUB_NODE_HANDLE_ID,
+          );
+          if (alreadyFilled) return false;
+        }
+        return true;
+      }
 
       const alreadyConnected = edges.some(
         (e) => e.target === connection.target && e.targetHandle === connection.targetHandle,
@@ -129,9 +164,34 @@ function CanvasInner() {
     [nodes, edges],
   );
 
+  // spec-012: connecting a sub-node into a root whose outputs mirror that
+  // slot (resolve_slots_from_sub_node, e.g. webhook_trigger + an adapter)
+  // must update the root's rendered output ports immediately, not only on
+  // the next full graph load -- otherwise a freshly-wired adapter's real
+  // ports (payload, or message_text/sender_id/chat_id) never appear until
+  // you save and reload. updateNodeInternals() is the same "tell
+  // @xyflow/react a node's handles changed after mount" call already used
+  // by onConfigChange below, for the same underlying reason (Phase 2's
+  // stale-handle finding from spec-005).
   const onConnect = useCallback(
-    (connection: Connection) => setEdges((eds) => addEdge(connection, eds)),
-    [setEdges],
+    (connection: Connection) => {
+      setEdges((eds) => addEdge(connection, eds));
+
+      if (connection.sourceHandle === SUB_NODE_HANDLE_ID) {
+        const targetNode = nodes.find((n) => n.id === connection.target);
+        const sourceNode = nodes.find((n) => n.id === connection.source);
+        const typeInfo = targetNode ? nodeTypesByName[targetNode.data.nodeType] : undefined;
+        if (targetNode && sourceNode && typeInfo?.resolve_slots_from_sub_node === connection.targetHandle) {
+          setNodes((nds) =>
+            nds.map((n) =>
+              n.id === targetNode.id ? { ...n, data: { ...n.data, outputs: sourceNode.data.outputs } } : n,
+            ),
+          );
+          window.setTimeout(() => updateNodeInternals(targetNode.id), 0);
+        }
+      }
+    },
+    [setEdges, setNodes, nodes, nodeTypesByName, updateNodeInternals],
   );
 
   // --- run + live trace polling (spec-005 §4/§6) -----------------------
@@ -209,6 +269,17 @@ function CanvasInner() {
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null;
   const selectedTraceRecord = run?.trace.find((t) => t.node_id === selectedNodeId) ?? null;
 
+  // spec-012: every sub-node currently wired into the selected node's own
+  // slots, for ConfigPanel's read-only summary -- derived from `edges`
+  // (sub_node-kind, targeting the selected node) + `nodes`, not stored
+  // separately.
+  const connectedSubNodes = selectedNode
+    ? edges
+        .filter((e) => e.target === selectedNode.id && e.sourceHandle === SUB_NODE_HANDLE_ID)
+        .map((e) => ({ slot: e.targetHandle ?? "", node: nodes.find((n) => n.id === e.source) }))
+        .filter((entry): entry is { slot: string; node: GenericFlowNode } => entry.node !== undefined)
+    : [];
+
   return (
     <div className="app-layout">
       <Palette />
@@ -265,6 +336,7 @@ function CanvasInner() {
         node={selectedNode}
         traceRecord={selectedTraceRecord}
         hasRun={run !== null}
+        connectedSubNodes={connectedSubNodes}
         onConfigChange={(nodeId, config, inputs, outputs) => {
           setNodes((nds) =>
             nds.map((n) =>

@@ -212,10 +212,22 @@ def test_missing_connection_reports_specific_missing_connection_rule():
     assert "not-configured-anywhere" in issue.message
 
 
-def test_valid_agent_with_edge_free_tool_node_passes(registered_test_connection):
-    # spec-008 §4: a tool node's inputs come from the agent's tool calls,
-    # not edges -- so tool_1 correctly has zero incoming edges, only
-    # agent_1's own "task" input (a normal static slot) is edge-fed.
+def _agent_cluster_nodes(connection: str = "test-connection") -> str:
+    """A valid `model` + `agent` node pair, as JSON node entries (no
+    trailing comma) -- shared by several sub_node-edge tests below."""
+    return f"""
+            {{"id": "model_1", "type": "model", "config": {{
+                "connection": "{connection}", "model": "m", "max_tokens": 50}}}},
+            {{"id": "agent_1", "type": "agent", "config": {{"max_iterations": 3}}}}
+    """
+
+
+def test_valid_agent_with_edge_free_tool_sub_node_passes(registered_test_connection):
+    # spec-012 §4: a tool sub-node's inputs come from the agent's direct
+    # tool calls, not edges (ADR-008, now edge-based) -- so tool_1
+    # correctly has zero incoming *data* edges, only a `sub_node` edge into
+    # agent_1's `tools` slot; agent_1's own "task" input is edge-fed as
+    # normal.
     graph = parse_graph_json(
         """
         {
@@ -223,13 +235,15 @@ def test_valid_agent_with_edge_free_tool_node_passes(registered_test_connection)
           "nodes": [
             {"id": "in", "type": "text_input", "config": {"value": "hi"}},
             {"id": "tool_1", "type": "code", "config": {"function_source": "def f(x):\\n    return x\\n"}},
-            {"id": "agent_1", "type": "agent", "config": {
-                "connection": "test-connection", "model": "m", "tools": ["tool_1"],
-                "memory": {"max_messages": 5}, "max_iterations": 3, "max_tokens": 50}},
+"""
+        + _agent_cluster_nodes()
+        + """,
             {"id": "out", "type": "text_output", "config": {}}
           ],
           "edges": [
             {"from": {"node": "in", "slot": "text"}, "to": {"node": "agent_1", "slot": "task"}},
+            {"kind": "sub_node", "slot": "model", "from": {"node": "model_1"}, "to": {"node": "agent_1"}},
+            {"kind": "sub_node", "slot": "tools", "from": {"node": "tool_1"}, "to": {"node": "agent_1"}},
             {"from": {"node": "agent_1", "slot": "answer"}, "to": {"node": "out", "slot": "text"}}
           ]
         }
@@ -239,20 +253,25 @@ def test_valid_agent_with_edge_free_tool_node_passes(registered_test_connection)
     validate_graph(graph)  # should not raise
 
 
-def test_unknown_tool_reference_rejected(registered_test_connection):
+def test_sub_node_edge_referencing_unknown_node_rejected(registered_test_connection):
+    # spec-012 §4: a dangling sub_node edge is a structural error, exactly
+    # like a dangling data edge -- check_structural applies to every edge
+    # kind, not just "data" ones.
     graph = parse_graph_json(
         """
         {
           "version": "0.1",
           "nodes": [
             {"id": "in", "type": "text_input", "config": {"value": "hi"}},
-            {"id": "agent_1", "type": "agent", "config": {
-                "connection": "test-connection", "model": "m", "tools": ["does_not_exist"],
-                "memory": {"max_messages": 5}, "max_iterations": 3, "max_tokens": 50}},
+"""
+        + _agent_cluster_nodes()
+        + """,
             {"id": "out", "type": "text_output", "config": {}}
           ],
           "edges": [
             {"from": {"node": "in", "slot": "text"}, "to": {"node": "agent_1", "slot": "task"}},
+            {"kind": "sub_node", "slot": "model", "from": {"node": "model_1"}, "to": {"node": "agent_1"}},
+            {"kind": "sub_node", "slot": "tools", "from": {"node": "does_not_exist"}, "to": {"node": "agent_1"}},
             {"from": {"node": "agent_1", "slot": "answer"}, "to": {"node": "out", "slot": "text"}}
           ]
         }
@@ -262,12 +281,11 @@ def test_unknown_tool_reference_rejected(registered_test_connection):
     with pytest.raises(GraphValidationError) as exc_info:
         validate_graph(graph)
 
-    issue = next(i for i in exc_info.value.issues if i.rule == "unknown_tool_reference")
-    assert issue.node_id == "agent_1"
+    issue = next(i for i in exc_info.value.issues if i.rule == "structural")
     assert "does_not_exist" in issue.message
 
 
-def test_tool_node_with_conflicting_incoming_edge_rejected(registered_test_connection):
+def test_tool_sub_node_with_conflicting_incoming_data_edge_rejected(registered_test_connection):
     graph = parse_graph_json(
         """
         {
@@ -276,13 +294,15 @@ def test_tool_node_with_conflicting_incoming_edge_rejected(registered_test_conne
             {"id": "in", "type": "text_input", "config": {"value": "hi"}},
             {"id": "edge_source", "type": "text_input", "config": {"value": "conflict"}},
             {"id": "tool_1", "type": "code", "config": {"function_source": "def f(x):\\n    return x\\n"}},
-            {"id": "agent_1", "type": "agent", "config": {
-                "connection": "test-connection", "model": "m", "tools": ["tool_1"],
-                "memory": {"max_messages": 5}, "max_iterations": 3, "max_tokens": 50}},
+"""
+        + _agent_cluster_nodes()
+        + """,
             {"id": "out", "type": "text_output", "config": {}}
           ],
           "edges": [
             {"from": {"node": "in", "slot": "text"}, "to": {"node": "agent_1", "slot": "task"}},
+            {"kind": "sub_node", "slot": "model", "from": {"node": "model_1"}, "to": {"node": "agent_1"}},
+            {"kind": "sub_node", "slot": "tools", "from": {"node": "tool_1"}, "to": {"node": "agent_1"}},
             {"from": {"node": "agent_1", "slot": "answer"}, "to": {"node": "out", "slot": "text"}},
             {"from": {"node": "edge_source", "slot": "text"}, "to": {"node": "tool_1", "slot": "x"}}
           ]
@@ -293,6 +313,92 @@ def test_tool_node_with_conflicting_incoming_edge_rejected(registered_test_conne
     with pytest.raises(GraphValidationError) as exc_info:
         validate_graph(graph)
 
-    issue = next(i for i in exc_info.value.issues if i.rule == "tool_node_has_conflicting_edges")
+    issue = next(i for i in exc_info.value.issues if i.rule == "sub_node_has_conflicting_edges")
     assert issue.node_id == "agent_1"
     assert "tool_1" in issue.message
+
+
+def test_incompatible_sub_node_type_rejected(registered_test_connection):
+    # spec-012 §6: wiring a `code` node into the `model` slot must be
+    # rejected -- `code`'s type has no `sub_node_role`, but the `model`
+    # slot requires role "model".
+    graph = parse_graph_json(
+        """
+        {
+          "version": "0.1",
+          "nodes": [
+            {"id": "in", "type": "text_input", "config": {"value": "hi"}},
+            {"id": "not_a_model", "type": "code", "config": {"function_source": "def f():\\n    return 'x'\\n"}},
+            {"id": "agent_1", "type": "agent", "config": {"max_iterations": 3}},
+            {"id": "out", "type": "text_output", "config": {}}
+          ],
+          "edges": [
+            {"from": {"node": "in", "slot": "text"}, "to": {"node": "agent_1", "slot": "task"}},
+            {"kind": "sub_node", "slot": "model", "from": {"node": "not_a_model"}, "to": {"node": "agent_1"}},
+            {"from": {"node": "agent_1", "slot": "answer"}, "to": {"node": "out", "slot": "text"}}
+          ]
+        }
+        """
+    )
+
+    with pytest.raises(GraphValidationError) as exc_info:
+        validate_graph(graph)
+
+    issue = next(i for i in exc_info.value.issues if i.rule == "incompatible_sub_node_type")
+    assert issue.node_id == "agent_1"
+    assert "not_a_model" in issue.message
+
+
+def test_agent_missing_required_model_sub_node_rejected(registered_test_connection):
+    graph = parse_graph_json(
+        """
+        {
+          "version": "0.1",
+          "nodes": [
+            {"id": "in", "type": "text_input", "config": {"value": "hi"}},
+            {"id": "agent_1", "type": "agent", "config": {"max_iterations": 3}},
+            {"id": "out", "type": "text_output", "config": {}}
+          ],
+          "edges": [
+            {"from": {"node": "in", "slot": "text"}, "to": {"node": "agent_1", "slot": "task"}},
+            {"from": {"node": "agent_1", "slot": "answer"}, "to": {"node": "out", "slot": "text"}}
+          ]
+        }
+        """
+    )
+
+    with pytest.raises(GraphValidationError) as exc_info:
+        validate_graph(graph)
+
+    issue = next(i for i in exc_info.value.issues if i.rule == "sub_node_cardinality")
+    assert issue.node_id == "agent_1"
+    assert "model" in issue.message
+
+
+def test_agent_with_two_model_sub_nodes_rejected(registered_test_connection):
+    graph = parse_graph_json(
+        """
+        {
+          "version": "0.1",
+          "nodes": [
+            {"id": "in", "type": "text_input", "config": {"value": "hi"}},
+            {"id": "model_1", "type": "model", "config": {"connection": "test-connection", "model": "m", "max_tokens": 50}},
+            {"id": "model_2", "type": "model", "config": {"connection": "test-connection", "model": "m2", "max_tokens": 50}},
+            {"id": "agent_1", "type": "agent", "config": {"max_iterations": 3}},
+            {"id": "out", "type": "text_output", "config": {}}
+          ],
+          "edges": [
+            {"from": {"node": "in", "slot": "text"}, "to": {"node": "agent_1", "slot": "task"}},
+            {"kind": "sub_node", "slot": "model", "from": {"node": "model_1"}, "to": {"node": "agent_1"}},
+            {"kind": "sub_node", "slot": "model", "from": {"node": "model_2"}, "to": {"node": "agent_1"}},
+            {"from": {"node": "agent_1", "slot": "answer"}, "to": {"node": "out", "slot": "text"}}
+          ]
+        }
+        """
+    )
+
+    with pytest.raises(GraphValidationError) as exc_info:
+        validate_graph(graph)
+
+    issue = next(i for i in exc_info.value.issues if i.rule == "sub_node_cardinality")
+    assert issue.node_id == "agent_1"

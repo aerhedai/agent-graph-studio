@@ -83,10 +83,14 @@ def _schedule_graph(cron: str = "*/5 * * * *") -> dict:
 
 
 def _webhook_graph() -> dict:
+    # spec-012: webhook_trigger is a cluster root now -- a generic_adapter
+    # sub-node (today's exact SPEC-009 passthrough behavior) must be wired
+    # in via a sub_node edge for this to behave identically to before.
     return {
         "version": "0.1",
         "nodes": [
             {"id": "trigger", "type": "webhook_trigger", "config": {}},
+            {"id": "adapter", "type": "generic_adapter", "config": {}},
             {
                 "id": "parse",
                 "type": "code",
@@ -95,7 +99,10 @@ def _webhook_graph() -> dict:
                 },
             },
         ],
-        "edges": [{"from": {"node": "trigger", "slot": "payload"}, "to": {"node": "parse", "slot": "raw"}}],
+        "edges": [
+            {"kind": "sub_node", "slot": "trigger_adapter", "from": {"node": "adapter"}, "to": {"node": "trigger"}},
+            {"from": {"node": "trigger", "slot": "payload"}, "to": {"node": "parse", "slot": "raw"}},
+        ],
     }
 
 

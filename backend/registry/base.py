@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel
 
@@ -26,6 +26,23 @@ ResolveSlots = Callable[[NodeSpec], "tuple[list[InputSlotSpec], list[OutputSlotS
 
 
 @dataclass(frozen=True)
+class SubNodeSlotSpec:
+    """One named sub-node slot a root (cluster) node type declares (spec-012
+    §4) -- e.g. `agent` declares `model`/`memory`/`tools`, `webhook_trigger`
+    declares `trigger_adapter`. Mirrors the same "capability declared at
+    registration, engine stays generic" pattern already used for
+    `resolve_slots` (SPEC-002) and connection capabilities like `embed`
+    (SPEC-011), applied to node types instead."""
+
+    cardinality: Literal["one", "zero_or_one", "many"]
+    accepts_role: str | None = None
+    """The `sub_node_role` a connected sub-node's type must declare to be
+    valid in this slot (e.g. "model" for the `model` slot). None means any
+    node type is accepted -- the `tools` slot's shape, matching SPEC-008's
+    existing "any node type can be a tool" precedent."""
+
+
+@dataclass(frozen=True)
 class NodeDefinition:
     type_name: str
     inputs: list[InputSlotSpec]
@@ -42,6 +59,24 @@ class NodeDefinition:
     `effective_inputs`/`effective_outputs` rather than reading `.inputs`/
     `.outputs` directly. Every other (static-schema) node type leaves this
     None and is completely unaffected."""
+    sub_node_slots: dict[str, SubNodeSlotSpec] | None = None
+    """Root (cluster) node types only (spec-012 §4): the named sub-node
+    slots this type declares, e.g. `agent`'s `{"model": ..., "memory": ...,
+    "tools": ...}`. None for every non-root type."""
+    sub_node_role: str | None = None
+    """Sub-node-eligible types only (spec-012 §4): the role this type can
+    fill in some root's slot, e.g. `model`'s `"model"`, the trigger
+    adapters' `"trigger_adapter"`. None for ordinary node types and for
+    root types themselves (a root doesn't plug into another root's slot in
+    this spec)."""
+    resolve_slots_from_sub_node: str | None = None
+    """Root types only, and only when the root's own output ports should
+    mirror whichever sub-node is currently connected to one of its slots
+    (spec-012 §4) -- e.g. `webhook_trigger`'s outputs are whatever its
+    connected `trigger_adapter` declares (`generic_adapter`'s `payload` vs
+    `telegram_adapter`'s `message_text`/`sender_id`/`chat_id`). Names the
+    slot to mirror. None for every other type, including `agent` (whose own
+    `answer` output is fixed regardless of which `model` is connected)."""
 
 
 def effective_inputs(definition: NodeDefinition, node: NodeSpec) -> list[InputSlotSpec] | None:

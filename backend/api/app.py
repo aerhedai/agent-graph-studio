@@ -39,6 +39,7 @@ from backend.api.schemas import (
     RunSubmitResponse,
     RunSummary,
     SlotInfo,
+    SubNodeSlotInfo,
     TestConnectionRequest,
     TestConnectionResponse,
     TriggerInfo,
@@ -87,9 +88,22 @@ def list_node_types() -> list[NodeTypeInfo]:
     infos: list[NodeTypeInfo] = []
     for type_name in default_registry.all_types():
         definition = default_registry.get(type_name)
-        is_dynamic = definition.resolve_slots is not None
+        # spec-012: a root whose ports mirror a connected sub-node
+        # (resolve_slots_from_sub_node, e.g. webhook_trigger) is dynamic in
+        # the same "empty until resolved" sense as config-based dynamism --
+        # just resolved by the canvas client-side from the connected
+        # sub-node's own static outputs, not via POST /resolve-slots.
+        is_dynamic = definition.resolve_slots is not None or definition.resolve_slots_from_sub_node is not None
         inputs = [] if is_dynamic else _slot_info_list(definition.inputs)
         outputs = [] if is_dynamic else _slot_info_list(definition.outputs)
+        sub_node_slots = (
+            {
+                name: SubNodeSlotInfo(cardinality=spec.cardinality, accepts_role=spec.accepts_role)
+                for name, spec in definition.sub_node_slots.items()
+            }
+            if definition.sub_node_slots is not None
+            else None
+        )
         infos.append(
             NodeTypeInfo(
                 type=type_name,
@@ -97,6 +111,9 @@ def list_node_types() -> list[NodeTypeInfo]:
                 dynamic_schema=is_dynamic,
                 inputs=inputs,
                 outputs=outputs,
+                sub_node_slots=sub_node_slots,
+                sub_node_role=definition.sub_node_role,
+                resolve_slots_from_sub_node=definition.resolve_slots_from_sub_node,
             )
         )
     return infos

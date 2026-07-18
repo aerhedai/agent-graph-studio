@@ -116,13 +116,20 @@ async def _run_graph_async(
     round as one `gather` call.
     """
     nodes_by_id = {n.id: n for n in graph.nodes}
-    incoming_by_slot = {(e.to.node, e.to.slot): e for e in graph.edges}
+    incoming_by_slot = {(e.to.node, e.to.slot): e for e in graph.edges if e.kind == "data"}
 
     available: dict[tuple[str, str], Any] = {}
     trace: list[TraceRecord] = []
     result: dict[str, Any] = {}
 
-    pending: list[str] = [n.id for n in graph.nodes]
+    # sub_node edges' sources (spec-012 §4) are never scheduled/executed by
+    # this round-based scheduler at all -- they're inert config carriers
+    # (`model`, `memory`) or, for trigger adapters, invoked directly by
+    # their root's own execute() (the same ADR-008-style bypass already
+    # used for agent tool calls), never through the normal edge-gathering
+    # path this loop drives.
+    sub_node_ids = {e.from_.node for e in graph.edges if e.kind == "sub_node"}
+    pending: list[str] = [n.id for n in graph.nodes if n.id not in sub_node_ids]
     finished: set[str] = set()
 
     def gather_inputs(node_id: str) -> tuple[str, dict[str, Any] | None]:
@@ -231,9 +238,28 @@ def run_graph(
     run_graph() call, which reuses the outer `resources` dict; without this
     living here, a nested loop iteration would see the *outer* graph's
     nodes_by_id instead of its own sub_graph's.
+
+    `resources["sub_nodes"]` (spec-012 §4) is a second, small addition of
+    exactly the same shape and for exactly the same reason: a root
+    (cluster) node type -- `agent`, `webhook_trigger` -- needs to look up
+    which sibling node(s) are wired into each of its declared sub-node
+    slots (`model`, `memory`, `tools`, `trigger_adapter`), to invoke them
+    directly (the same ADR-008-style bypass, now edge-based via `sub_node`
+    edges instead of a config list). `(root_node_id, slot_name) ->
+    [connected sub-node ids]`, computed from `graph.edges` here so it's
+    always correct for the graph actually being run at each level, same as
+    `nodes_by_id`.
     """
     validate_graph(graph, registry)
-    resources = {**(resources or {}), "nodes_by_id": {n.id: n for n in graph.nodes}}
+    sub_nodes: dict[tuple[str, str], list[str]] = {}
+    for e in graph.edges:
+        if e.kind == "sub_node":
+            sub_nodes.setdefault((e.to.node, e.slot), []).append(e.from_.node)
+    resources = {
+        **(resources or {}),
+        "nodes_by_id": {n.id: n for n in graph.nodes},
+        "sub_nodes": sub_nodes,
+    }
     run_id = run_id or str(uuid4())
     return asyncio.run(
         _run_graph_async(graph, registry, resources, run_id, on_round_start, on_trace_record)
