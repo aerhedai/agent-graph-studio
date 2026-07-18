@@ -66,22 +66,27 @@ def _reset_fake_impl():
     _current_impl = None
 
 
-def _agent_node(
-    tools: list[str], max_iterations: int = 10, max_messages: int = 20, connection: str = "fake-conn"
-) -> NodeSpec:
+# --- spec-012: model/memory/tools are sub-node edges now, not inline agent
+# config -- these helpers build the separate `model`/`memory` node specs
+# and thread everything through `resources["sub_nodes"]`
+# ((root_id, slot_name) -> [connected sub-node ids]), mirroring exactly what
+# engine.py's run_graph() itself populates from real `sub_node` edges.
+
+
+def _agent_node(max_iterations: int = 10) -> NodeSpec:
+    return NodeSpec(id="agent_1", type="agent", config={"max_iterations": max_iterations})
+
+
+def _model_node(connection: str = "fake-conn", node_id: str = "model_1") -> NodeSpec:
     return NodeSpec(
-        id="agent_1",
-        type="agent",
-        config={
-            "connection": connection,
-            "model": "test-model",
-            "system_prompt": "",
-            "tools": tools,
-            "memory": {"type": "window", "max_messages": max_messages},
-            "max_iterations": max_iterations,
-            "max_tokens": 100,
-        },
+        id=node_id,
+        type="model",
+        config={"connection": connection, "model": "test-model", "system_prompt": "", "max_tokens": 100},
     )
+
+
+def _memory_node(max_messages: int = 20, node_id: str = "memory_1") -> NodeSpec:
+    return NodeSpec(id=node_id, type="memory", config={"type": "window", "max_messages": max_messages})
 
 
 def _multiply_tool_node(node_id: str = "multiply_tool") -> NodeSpec:
@@ -92,17 +97,37 @@ def _multiply_tool_node(node_id: str = "multiply_tool") -> NodeSpec:
     )
 
 
-def _ctx(node: NodeSpec, task: str, tool_nodes: list[NodeSpec], connection_type: str = "fake-tool-calling") -> ExecutionContext:
+def _ctx(
+    node: NodeSpec,
+    task: str,
+    tool_nodes: list[NodeSpec],
+    connection_type: str = "fake-tool-calling",
+    model_node: NodeSpec | None = None,
+    memory_node: NodeSpec | None = None,
+    omit_connection_profile: bool = False,
+) -> ExecutionContext:
+    model_node = model_node if model_node is not None else _model_node()
+    all_nodes = [model_node, *tool_nodes]
+    sub_nodes: dict[tuple[str, str], list[str]] = {(node.id, "model"): [model_node.id]}
+    if memory_node is not None:
+        all_nodes.append(memory_node)
+        sub_nodes[(node.id, "memory")] = [memory_node.id]
+    if tool_nodes:
+        sub_nodes[(node.id, "tools")] = [n.id for n in tool_nodes]
+
+    connection_profiles = {}
+    if not omit_connection_profile:
+        connection_profiles[model_node.config["connection"]] = ConnectionProfile(
+            name=model_node.config["connection"], type=connection_type, config={}
+        )
+
     return ExecutionContext(
         node=node,
         inputs={"task": task},
         resources={
-            "connection_profiles": {
-                node.config["connection"]: ConnectionProfile(
-                    name=node.config["connection"], type=connection_type, config={}
-                )
-            },
-            "nodes_by_id": {n.id: n for n in tool_nodes},
+            "connection_profiles": connection_profiles,
+            "nodes_by_id": {n.id: n for n in all_nodes},
+            "sub_nodes": sub_nodes,
         },
     )
 
@@ -139,7 +164,7 @@ def test_agent_calls_tool_and_incorporates_result():
 
     _current_impl = impl
 
-    node = _agent_node(tools=["multiply_tool"])
+    node = _agent_node()
     tool_node = _multiply_tool_node()
     ctx = _ctx(node, "What is 6 times 7?", [tool_node])
 
@@ -158,7 +183,7 @@ def test_agent_direct_answer_no_tool_call():
     global _current_impl
     _current_impl = lambda config, **kwargs: ToolCallResponse(text="Paris", tool_calls=[])
 
-    node = _agent_node(tools=["multiply_tool"])
+    node = _agent_node()
     tool_node = _multiply_tool_node()
     ctx = _ctx(node, "What is the capital of France?", [tool_node])
 
@@ -182,7 +207,7 @@ def test_max_iterations_stops_a_never_ending_tool_loop():
 
     _current_impl = impl
 
-    node = _agent_node(tools=["multiply_tool"], max_iterations=3)
+    node = _agent_node(max_iterations=3)
     tool_node = _multiply_tool_node()
     ctx = _ctx(node, "keep going forever", [tool_node])
 
@@ -210,9 +235,9 @@ def test_memory_window_truncates_within_a_single_run():
 
     _current_impl = impl
 
-    node = _agent_node(tools=["multiply_tool"], max_iterations=10, max_messages=3)
+    node = _agent_node(max_iterations=10)
     tool_node = _multiply_tool_node()
-    ctx = _ctx(node, "start", [tool_node])
+    ctx = _ctx(node, "start", [tool_node], memory_node=_memory_node(max_messages=3))
 
     result = execute_agent(ctx)
 
@@ -220,6 +245,38 @@ def test_memory_window_truncates_within_a_single_run():
     # Every call after the window fills must never see more than max_messages.
     assert all(n <= 3 for n in observed_message_lengths[1:])
     assert max(observed_message_lengths) <= 3
+
+
+def test_no_memory_sub_node_connected_keeps_full_history():
+    """spec-012 §4: `memory` is a zero-or-one sub-node slot -- with none
+    connected, no windowing happens at all (the sensible default)."""
+    global _current_impl
+    call_count = 0
+    observed_message_lengths = []
+
+    def impl(config, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        observed_message_lengths.append(len(kwargs["messages"]))
+        if call_count < 5:
+            return ToolCallResponse(
+                text=None,
+                tool_calls=[ToolCallRequest(id=f"call_{call_count}", name="multiply_tool", arguments={"a": "1", "b": "1"})],
+            )
+        return ToolCallResponse(text="done", tool_calls=[])
+
+    _current_impl = impl
+
+    node = _agent_node(max_iterations=10)
+    tool_node = _multiply_tool_node()
+    ctx = _ctx(node, "start", [tool_node])  # no memory_node passed
+
+    result = execute_agent(ctx)
+
+    assert result.outputs == {"answer": "done"}
+    # Unbounded: message count grows every call, never truncated.
+    assert observed_message_lengths == sorted(observed_message_lengths)
+    assert observed_message_lengths[-1] > 3
 
 
 def test_malformed_tool_arguments_are_fed_back_and_model_self_corrects():
@@ -246,7 +303,7 @@ def test_malformed_tool_arguments_are_fed_back_and_model_self_corrects():
 
     _current_impl = impl
 
-    node = _agent_node(tools=["multiply_tool"], max_iterations=5)
+    node = _agent_node(max_iterations=5)
     tool_node = _multiply_tool_node()
     ctx = _ctx(node, "5 times 3", [tool_node])
 
@@ -281,7 +338,7 @@ def test_hallucinated_tool_name_is_fed_back_and_model_self_corrects():
 
     _current_impl = impl
 
-    node = _agent_node(tools=["multiply_tool"], max_iterations=5)
+    node = _agent_node(max_iterations=5)
     tool_node = _multiply_tool_node()
     ctx = _ctx(node, "2 times 2", [tool_node])
 
@@ -293,7 +350,7 @@ def test_hallucinated_tool_name_is_fed_back_and_model_self_corrects():
 
 
 def test_connection_type_without_tool_calling_support_raises_clear_error():
-    node = _agent_node(tools=[])
+    node = _agent_node()
     ctx = _ctx(node, "hello", [], connection_type="fake-no-tool-support")
 
     with pytest.raises(NodeExecutionError, match="does not support"):
@@ -301,10 +358,27 @@ def test_connection_type_without_tool_calling_support_raises_clear_error():
 
 
 def test_missing_connection_profile_raises_clear_error():
-    node = _agent_node(tools=[])
-    ctx = ExecutionContext(node=node, inputs={"task": "hi"}, resources={})
+    node = _agent_node()
+    ctx = _ctx(node, "hi", [], omit_connection_profile=True)
 
     with pytest.raises(NodeExecutionError):
+        execute_agent(ctx)
+
+
+def test_no_model_sub_node_connected_raises_clear_error():
+    """Defensive-only path: validate_graph()'s check_sub_node_edges already
+    guarantees exactly one connected `model` sub-node before a real run
+    ever reaches execute_agent (cardinality="one") -- this exercises that
+    defensive guard directly, the same "should have been resolved before
+    this run started" precedent used throughout this codebase."""
+    node = _agent_node()
+    ctx = ExecutionContext(
+        node=node,
+        inputs={"task": "hi"},
+        resources={"connection_profiles": {}, "nodes_by_id": {}, "sub_nodes": {}},
+    )
+
+    with pytest.raises(NodeExecutionError, match="expected exactly 1"):
         execute_agent(ctx)
 
 
@@ -318,7 +392,7 @@ def test_tool_schema_derivation_matches_referenced_code_node_params():
 
     _current_impl = impl
 
-    node = _agent_node(tools=["multiply_tool"])
+    node = _agent_node()
     tool_node = _multiply_tool_node()
     ctx = _ctx(node, "hi", [tool_node])
 

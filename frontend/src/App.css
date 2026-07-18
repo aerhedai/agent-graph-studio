@@ -146,7 +146,8 @@
 /* --- generic node --- */
 
 .generic-node {
-  min-width: 170px;
+  position: relative;
+  min-width: 210px;
   border: 2px solid var(--border);
   border-radius: 8px;
   background: var(--panel-bg);
@@ -157,28 +158,63 @@
   position: relative;
 }
 
+/* Flowchart-style shapes: a "start" node (no data inputs -- text_input,
+   schedule_trigger, webhook_trigger) gets a semicircular left edge with a
+   flat vertical right edge; a "terminator" node (no data outputs --
+   text_output) gets the mirror image. Every other node (including model/
+   memory, which have no data ports on either side) keeps the ordinary
+   rounded-rectangle shape. A fixed large radius always clamps to a true
+   semicircle regardless of the node's actual (port-count-dependent)
+   height, so this needs no per-node height math. */
+.generic-node--start {
+  border-radius: 999px 8px 8px 999px;
+}
+
+.generic-node--terminator {
+  border-radius: 8px 999px 999px 8px;
+}
+
+/* Selection and live run status are both expressed as the shape's own
+   outline (color + thickness), not a separate header bar -- there is no
+   header bar anymore, see .generic-node__title below. Status wins over
+   mere selection (source order: status rules follow .selected) since
+   seeing a node's real running/success/error state matters more than
+   showing it's the currently-selected one. */
 .generic-node.selected {
   border-color: var(--accent);
 }
 
-.generic-node__header {
-  font-weight: 600;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  border-radius: 6px 6px 0 0;
+.generic-node.status-running {
+  border-color: var(--status-running);
+  border-width: 4px;
+}
+.generic-node.status-success {
+  border-color: var(--status-success);
+  border-width: 4px;
+}
+.generic-node.status-error {
+  border-color: var(--status-error);
+  border-width: 4px;
 }
 
-.generic-node.status-pending .generic-node__header {
-  background: color-mix(in srgb, var(--status-pending) 15%, transparent);
-}
-.generic-node.status-running .generic-node__header {
-  background: color-mix(in srgb, var(--status-running) 20%, transparent);
-}
-.generic-node.status-success .generic-node__header {
-  background: color-mix(in srgb, var(--status-success) 18%, transparent);
-}
-.generic-node.status-error .generic-node__header {
-  background: color-mix(in srgb, var(--status-error) 20%, transparent);
+/* The node type name, dead-centered over the whole shape (not a top
+   header bar) -- absolutely positioned so it never competes for layout
+   space with the edge-hugging port labels, regardless of port count.
+   `white-space: nowrap` + a min-width generous enough for this project's
+   longest real type name (conditional_branch, 18 chars) keeps every name
+   on one line rather than wrapping. `pointer-events: none` lets clicks
+   pass through to the node body underneath for selection. */
+.generic-node__title {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  white-space: nowrap;
+  padding: 0 10px;
+  pointer-events: none;
+  z-index: 1;
 }
 
 .generic-node__port {
@@ -210,6 +246,39 @@
   font-style: italic;
   opacity: 0.6;
   font-size: 11px;
+}
+
+/* --- spec-012: sub-node connectors -- visually distinct (accent color,
+   diamond marker) from normal left/right data ports. A root's own slots
+   sit on ITS bottom edge; a sub-node's single "plug me in" connector sits
+   on ITS OWN top edge -- children render below their root and connect
+   upward into it, matching n8n's own sub-node convention. --- */
+
+.generic-node__port--sub-node-in {
+  bottom: -4px;
+  transform: translateX(-50%);
+  flex-direction: column-reverse;
+  align-items: center;
+}
+
+.generic-node__port--sub-node-in .generic-node__slot-label {
+  margin: 0 0 2px;
+}
+
+.generic-node__port--sub-node-out {
+  position: absolute;
+  top: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.generic-node__port--sub-node-in .react-flow__handle,
+.generic-node__port--sub-node-out .react-flow__handle {
+  background: var(--accent);
+  border-radius: 2px;
+  transform: rotate(45deg);
+  width: 8px;
+  height: 8px;
 }
 
 /* --- node inspector (config + trace tabs) --- */
@@ -315,6 +384,71 @@
 .config-panel button:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/* --- spec-012: read-only connected-sub-node summaries --- */
+
+.config-panel__sub-nodes {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
+.config-panel__sub-nodes-heading {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0 0 2px;
+}
+
+.config-panel__sub-nodes-hint {
+  font-size: 11px;
+  opacity: 0.6;
+  font-style: italic;
+  margin: 0 0 8px;
+}
+
+.config-panel__sub-node-summary {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.config-panel__sub-node-summary-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.config-panel__sub-node-slot {
+  font-weight: 600;
+}
+
+.config-panel__sub-node-type {
+  opacity: 0.7;
+}
+
+.config-panel__sub-node-summary-fields {
+  margin: 0;
+  font-size: 11px;
+}
+
+.config-panel__sub-node-summary-field {
+  display: flex;
+  gap: 6px;
+  opacity: 0.85;
+}
+
+.config-panel__sub-node-summary-field dt {
+  font-weight: 600;
+}
+
+.config-panel__sub-node-summary-field dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 /* --- connection picker (spec-006) --- */

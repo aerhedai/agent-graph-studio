@@ -16,6 +16,7 @@ interface ConfigPanelProps {
     inputs: SlotInfo[],
     outputs: SlotInfo[],
   ) => void;
+  connectedSubNodes: { slot: string; node: GenericFlowNode }[];
 }
 
 // Auto-generated from config_schema (the same Pydantic model the backend
@@ -23,7 +24,7 @@ interface ConfigPanelProps {
 // `function_source` is the one deliberate special case (spec-005 §7): a real
 // multi-line editor instead of a generic single-line input, since that's a
 // foreseeable UX problem worth solving directly.
-export function ConfigPanel({ node, onConfigChange }: ConfigPanelProps) {
+export function ConfigPanel({ node, onConfigChange, connectedSubNodes }: ConfigPanelProps) {
   const [draft, setDraft] = useState<Record<string, unknown>>({});
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -44,7 +45,14 @@ export function ConfigPanel({ node, onConfigChange }: ConfigPanelProps) {
     setSaving(true);
     setError(null);
     try {
-      if (node.data.dynamicSchema) {
+      if (node.data.resolveSlotsFromSubNode) {
+        // spec-012: this node's ports mirror a connected sub-node
+        // (webhook_trigger's trigger_adapter), not its own config -- there
+        // is nothing to re-resolve via POST /resolve-slots (config-based
+        // dynamism only). Ports are kept as-is; onConnect already updates
+        // them the moment the relevant sub-node edge is drawn.
+        onConfigChange(node.id, draft, node.data.inputs, node.data.outputs);
+      } else if (node.data.dynamicSchema) {
         // Re-resolve ports for this instance's new config (SPEC-002's
         // resolve_slots, over HTTP) -- e.g. a code node's params change
         // when function_source changes. Only on save/blur, not per
@@ -79,6 +87,31 @@ export function ConfigPanel({ node, onConfigChange }: ConfigPanelProps) {
       <button type="submit" disabled={saving}>
         {saving ? "Resolving..." : "Save"}
       </button>
+
+      {connectedSubNodes.length > 0 && (
+        <div className="config-panel__sub-nodes">
+          <h3 className="config-panel__sub-nodes-heading">Connected sub-nodes</h3>
+          <p className="config-panel__sub-nodes-hint">
+            Read-only -- click the node on canvas to edit its settings.
+          </p>
+          {connectedSubNodes.map(({ slot, node: subNode }) => (
+            <div key={`${slot}-${subNode.id}`} className="config-panel__sub-node-summary">
+              <div className="config-panel__sub-node-summary-header">
+                <span className="config-panel__sub-node-slot">{slot}</span>
+                <span className="config-panel__sub-node-type">{subNode.data.nodeType}</span>
+              </div>
+              <dl className="config-panel__sub-node-summary-fields">
+                {Object.entries(subNode.data.config).map(([key, value]) => (
+                  <div key={key} className="config-panel__sub-node-summary-field">
+                    <dt>{key}</dt>
+                    <dd>{typeof value === "string" ? value : JSON.stringify(value)}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          ))}
+        </div>
+      )}
     </form>
   );
 }

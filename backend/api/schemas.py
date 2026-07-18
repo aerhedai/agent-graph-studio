@@ -13,17 +13,42 @@ class SlotInfo(BaseModel):
     required: bool = True
 
 
+class SubNodeSlotInfo(BaseModel):
+    cardinality: str  # "one" | "zero_or_one" | "many"
+    accepts_role: str | None = None
+    """The sub_node_role a connected sub-node's type must declare to be
+    valid in this slot. None means any node type is accepted (e.g. the
+    `tools` slot) -- spec-012 §4."""
+
+
 class NodeTypeInfo(BaseModel):
     type: str
     config_schema: dict[str, Any]
     dynamic_schema: bool
     """True for node types whose actual ports depend on per-instance config
     (code, mcp_call, fan_out, merge -- SPEC-002's resolve_slots) rather than
-    being fixed for the whole type. `inputs`/`outputs` are empty when this is
-    true; call POST /node-types/{type}/resolve-slots with a real config to
-    get the actual ports."""
+    being fixed for the whole type, OR whose ports mirror a connected
+    sub-node (webhook_trigger -- spec-012's resolve_slots_from_sub_node).
+    `inputs`/`outputs` are empty when this is true; for config-based
+    dynamism call POST /node-types/{type}/resolve-slots, for sub-node-
+    mirrored dynamism the canvas resolves it client-side (the connected
+    sub-node's own static outputs, already known from this same endpoint)."""
     inputs: list[SlotInfo]
     outputs: list[SlotInfo]
+    sub_node_slots: dict[str, SubNodeSlotInfo] | None = None
+    """spec-012 §4: this type's own declared sub-node slots, e.g. agent's
+    model/memory/tools. None for non-root types."""
+    sub_node_role: str | None = None
+    """spec-012 §4: the role this type can fill in some root's slot (e.g.
+    "model", "trigger_adapter"). None for ordinary/root types."""
+    resolve_slots_from_sub_node: str | None = None
+    """spec-012 §4: names the sub-node slot whose connected sub-node's own
+    outputs this root's outputs mirror (e.g. webhook_trigger's
+    "trigger_adapter"). None for every type whose outputs are fixed
+    regardless of what's connected (e.g. agent, whose sub_node_slots are
+    non-null but whose own `answer` output never changes). Exposed so the
+    canvas can resolve a root's real ports client-side generically -- no
+    slot name hardcoded in frontend code."""
 
 
 class ResolveSlotsRequest(BaseModel):

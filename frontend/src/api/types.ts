@@ -9,12 +9,24 @@ export interface SlotInfo {
   required: boolean;
 }
 
+export interface SubNodeSlotInfo {
+  cardinality: "one" | "zero_or_one" | "many";
+  accepts_role: string | null; // null means any node type is accepted (e.g. `tools`)
+}
+
 export interface NodeTypeInfo {
   type: string;
   config_schema: JsonSchema;
   dynamic_schema: boolean;
   inputs: SlotInfo[];
   outputs: SlotInfo[];
+  // spec-012: cluster-node metadata. `sub_node_slots` is set for root types
+  // (e.g. agent's model/memory/tools); `sub_node_role` is set for
+  // sub-node-eligible types (e.g. model's "model", the adapters'
+  // "trigger_adapter"). A type can have neither (ordinary node types).
+  sub_node_slots?: Record<string, SubNodeSlotInfo> | null;
+  sub_node_role?: string | null;
+  resolve_slots_from_sub_node?: string | null;
 }
 
 export interface JsonSchemaProperty {
@@ -77,12 +89,14 @@ export interface GraphNodeSpec {
 
 export interface EdgeEndpoint {
   node: string;
-  slot: string;
+  slot?: string; // absent only on a sub_node-kind edge
 }
 
 export interface GraphEdgeSpec {
+  kind?: "data" | "sub_node"; // defaults to "data" server-side if omitted
   from: EdgeEndpoint;
   to: EdgeEndpoint;
+  slot?: string; // sub_node edges only: which of `to`'s sub-node slots this fills
 }
 
 export interface GraphSpec {
