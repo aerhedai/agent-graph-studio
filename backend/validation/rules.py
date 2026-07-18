@@ -176,27 +176,30 @@ def check_missing_connections(
     local store must produce a clear, specific error naming it -- reusing
     the exact same "aggregate issues, raise GraphValidationError" mechanism
     every other rule already has, rather than a bespoke exception path.
-    Generic across node types: any node whose config has a "connection" key
-    is checked, not just llm_call.
+    Generic across node types and across however many connection-typed
+    config fields one node has (spec-011 §4): reuses
+    connection_reference_names, the same convention-based key detection
+    resolve_connections() uses, so the two can never drift apart.
     """
+    from backend.connections.resolver import connection_reference_names
     from backend.connections.store import get_connection
 
     issues: list[ValidationIssue] = []
     known: dict[str, bool] = {}
     for node in graph.nodes:
-        name = node.config.get("connection") if isinstance(node.config, dict) else None
-        if not isinstance(name, str):
+        if not isinstance(node.config, dict):
             continue
-        if name not in known:
-            known[name] = get_connection(name, path=connections_path) is not None
-        if not known[name]:
-            issues.append(
-                ValidationIssue(
-                    "missing_connection",
-                    node.id,
-                    f"references connection '{name}' which isn't configured on this machine",
+        for name in connection_reference_names(node.config):
+            if name not in known:
+                known[name] = get_connection(name, path=connections_path) is not None
+            if not known[name]:
+                issues.append(
+                    ValidationIssue(
+                        "missing_connection",
+                        node.id,
+                        f"references connection '{name}' which isn't configured on this machine",
+                    )
                 )
-            )
     return issues
 
 

@@ -7,4 +7,8 @@ register_connection_type) and importing it below -- no changes needed to
 base.py, resolver.py, the API layer, or the frontend connection picker.
 """
 
-from backend.connections import anthropic_connection, ollama_connection  # noqa: F401
+from backend.connections import (  # noqa: F401
+    anthropic_connection,
+    ollama_connection,
+    vector_store_connection,
+)

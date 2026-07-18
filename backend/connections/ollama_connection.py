@@ -69,6 +69,23 @@ def list_models(config: OllamaConnectionConfig) -> list[str]:
     return _fetch_tags(config)
 
 
+def embed(config: OllamaConnectionConfig, model: str, text: str) -> list[float]:
+    """spec-011 §4: one text string's embedding vector, via Ollama's
+    /api/embeddings. Raises on failure -- callers (ingest_document,
+    vector_search) wrap this as a NodeExecutionError."""
+    url = f"{_base_url(config)}/api/embeddings"
+    payload = json.dumps({"model": model, "prompt": text}).encode("utf-8")
+    request = urllib.request.Request(
+        url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Ollama embeddings request to {url} failed: {e}") from e
+    return data["embedding"]
+
+
 def complete_with_tools(
     config: OllamaConnectionConfig,
     *,
@@ -157,4 +174,5 @@ register_connection_type(
     test_connection=test_connection,
     list_models=list_models,
     complete_with_tools=complete_with_tools,
+    embed=embed,
 )

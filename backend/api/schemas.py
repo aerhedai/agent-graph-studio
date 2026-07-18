@@ -88,6 +88,11 @@ class ConnectionTypeInfo(BaseModel):
     node. Computed from `complete_with_tools is not None`, same precedent
     as supports_model_listing -- no separate capability flag to drift out
     of sync with the actual callable."""
+    supports_embedding: bool
+    """spec-011 §4: whether this connection type can be used as an
+    `ingest_document`/`vector_search` node's embedding_model_connection.
+    Computed from `embed is not None`, same precedent as
+    supports_model_listing/supports_tool_calling."""
 
 
 class ConnectionInfo(BaseModel):

@@ -63,6 +63,15 @@ class ConnectionDefinition:
     `complete_with_tools is not None` -- no separate `supports_*` bool
     field, mirroring list_models' own precedent (SPEC-007) exactly, to
     avoid a flag that could drift out of sync with the actual callable."""
+    embed: Callable[[BaseModel, str, str], list[float]] | None = None
+    """Optional per-type capability (spec-011 §4): given this type's
+    validated config, a model name, and a text string, returns that text's
+    embedding vector. None for types with no embeddings primitive wired up
+    (Anthropic today -- no cheap embeddings endpoint, same precedent as
+    list_models). Only `ollama_connection.py` implements this for v1,
+    matching this spec's "embeddings: local, via Ollama" design decision.
+    Checked via `embed is not None`, same pattern as list_models/
+    complete_with_tools -- no separate `supports_*` bool field here either."""
 
 
 class ConnectionRegistry:
@@ -96,11 +105,12 @@ def register_connection_type(
     test_connection: Callable[[BaseModel], ConnectionTestResult],
     list_models: Callable[[BaseModel], list[str]] | None = None,
     complete_with_tools: Callable[..., ToolCallResponse] | None = None,
+    embed: Callable[[BaseModel, str, str], list[float]] | None = None,
     registry: ConnectionRegistry = default_connection_registry,
 ) -> None:
     """Plain registration call (not a decorator, unlike @register_node) --
     a connection type bundles several things (schema, build_client, test,
-    optionally list_models/complete_with_tools) rather than wrapping a
+    optionally list_models/complete_with_tools/embed) rather than wrapping a
     single execute function. Called as an import side effect at the bottom
     of each connection-type module, same "registration happens on import"
     precedent as the node registry."""
@@ -113,5 +123,6 @@ def register_connection_type(
             test_connection=test_connection,
             list_models=list_models,
             complete_with_tools=complete_with_tools,
+            embed=embed,
         )
     )

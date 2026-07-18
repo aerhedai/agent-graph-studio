@@ -22,6 +22,9 @@ def test_connection_types_lists_anthropic_and_ollama_with_zero_hardcoding():
     assert "host" in by_type["ollama"]["config_schema"]["properties"]
     assert "port" in by_type["ollama"]["config_schema"]["properties"]
     assert by_type["ollama"]["supports_model_listing"] is True
+    assert by_type["ollama"]["supports_embedding"] is True
+    assert by_type["anthropic"]["supports_embedding"] is False
+    assert by_type["vector_store"]["category"] == "local"
 
 
 def test_list_connection_models_returns_real_live_models(monkeypatch):
@@ -234,6 +237,34 @@ def test_delete_connection_returns_204_and_removes_it():
 def test_delete_unknown_connection_returns_404():
     response = client.delete("/connections/never-existed")
     assert response.status_code == 404
+
+
+def test_clear_connection_vectors_removes_stored_chunks_without_deleting_connection(tmp_path):
+    add_connection("vectors-conn", "vector_store", {"path": str(tmp_path / "store.db")})
+
+    from backend.connections.vector_store_connection import VectorStoreClient
+
+    VectorStoreClient(tmp_path / "store.db").add(["a chunk"], [[1.0, 0.0]], document_name=None)
+
+    response = client.delete("/connections/vectors-conn/vectors")
+
+    assert response.status_code == 204
+    assert VectorStoreClient(tmp_path / "store.db").query([1.0, 0.0], top_k=5) == []
+    # The connection profile itself is untouched.
+    assert any(c["name"] == "vectors-conn" for c in client.get("/connections").json())
+
+
+def test_clear_connection_vectors_unknown_connection_returns_404():
+    response = client.delete("/connections/never-saved-for-vectors/vectors")
+    assert response.status_code == 404
+
+
+def test_clear_connection_vectors_wrong_type_returns_422():
+    add_connection("not-a-vector-store", "anthropic", {"api_key": "sk-1"})
+
+    response = client.delete("/connections/not-a-vector-store/vectors")
+
+    assert response.status_code == 422
 
 
 def test_submit_run_with_valid_connection_resolves_and_executes(monkeypatch):

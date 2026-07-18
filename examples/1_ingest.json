@@ -1,0 +1,33 @@
+{
+  "version": "0.1",
+  "nodes": [
+    {
+      "id": "document",
+      "type": "text_input",
+      "config": {
+        "value": "Agent Graph Studio is a visual, node-graph-based tool for building AI agent workflows. It connects LLM calls, tools, and code as nodes on a canvas, wired together with typed edges."
+      }
+    },
+    {
+      "id": "ingest",
+      "type": "ingest_document",
+      "config": {
+        "connection": "rag-demo-store",
+        "embedding_model_connection": "my-pc-ollama-canvas",
+        "embedding_model": "nomic-embed-text",
+        "chunk_size": 150,
+        "chunk_overlap": 20,
+        "document_name": "agent-graph-studio-intro"
+      }
+    },
+    {
+      "id": "confirmation",
+      "type": "text_output",
+      "config": {}
+    }
+  ],
+  "edges": [
+    {"from": {"node": "document", "slot": "text"}, "to": {"node": "ingest", "slot": "text"}},
+    {"from": {"node": "ingest", "slot": "chunks_stored"}, "to": {"node": "confirmation", "slot": "text"}}
+  ]
+}

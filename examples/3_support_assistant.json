@@ -1,0 +1,73 @@
+{
+  "version": "0.1",
+  "nodes": [
+    {"id": "trigger", "type": "webhook_trigger", "config": {}},
+
+    {"id": "parse_question", "type": "code", "config": {
+      "function_source": "def run(payload):\n    import json\n    return json.loads(payload).get('question', '')"
+    }},
+
+    {"id": "check_question", "type": "conditional_branch", "config": {"condition": "equals('')"}},
+
+    {"id": "fallback_message", "type": "code", "config": {
+      "function_source": "def run(empty_question):\n    return \"I didn't receive a question -- please include one in your request.\""
+    }},
+    {"id": "fallback_output", "type": "text_output", "config": {}},
+
+    {"id": "split_research", "type": "fan_out", "config": {"worker_count": 2}},
+
+    {"id": "kb_search", "type": "vector_search", "config": {
+      "connection": "rag-demo-store",
+      "embedding_model_connection": "my-pc-ollama-canvas",
+      "embedding_model": "nomic-embed-text",
+      "top_k": 3
+    }},
+
+    {"id": "research_agent", "type": "agent", "config": {
+      "connection": "my-pc-ollama-canvas",
+      "model": "qwen2.5:14b",
+      "system_prompt": "You are a research assistant. Use the quick_calc tool if the question involves arithmetic.",
+      "tools": ["quick_calc"],
+      "memory": {"max_messages": 10},
+      "max_iterations": 5,
+      "max_tokens": 300
+    }},
+    {"id": "quick_calc", "type": "code", "config": {
+      "function_source": "def calculate(expression):\n    return str(eval(expression))"
+    }},
+
+    {"id": "combine_research", "type": "merge", "config": {"expected_input_count": 2}},
+
+    {"id": "build_final_prompt", "type": "code", "config": {
+      "function_source": "def run(combined, question):\n    import json\n    parts = json.loads(combined)\n    return f\"Question: {question}\\n\\nInternal knowledge base findings:\\n{parts[0]}\\n\\nResearch agent findings:\\n{parts[1]}\\n\\nWrite one clear, concise final answer using both sources.\""
+    }},
+
+    {"id": "final_llm", "type": "llm_call", "config": {
+      "connection": "my-pc-ollama-canvas",
+      "model": "qwen2.5:14b",
+      "system_prompt": "You synthesize research into one clear, direct answer for the user.",
+      "max_tokens": 300
+    }},
+    {"id": "research_output", "type": "text_output", "config": {}}
+  ],
+  "edges": [
+    {"from": {"node": "trigger", "slot": "payload"}, "to": {"node": "parse_question", "slot": "payload"}},
+    {"from": {"node": "parse_question", "slot": "result"}, "to": {"node": "check_question", "slot": "value"}},
+
+    {"from": {"node": "check_question", "slot": "true_branch"}, "to": {"node": "fallback_message", "slot": "empty_question"}},
+    {"from": {"node": "fallback_message", "slot": "result"}, "to": {"node": "fallback_output", "slot": "text"}},
+
+    {"from": {"node": "check_question", "slot": "false_branch"}, "to": {"node": "split_research", "slot": "value"}},
+    {"from": {"node": "check_question", "slot": "false_branch"}, "to": {"node": "build_final_prompt", "slot": "question"}},
+
+    {"from": {"node": "split_research", "slot": "branch_1"}, "to": {"node": "kb_search", "slot": "query"}},
+    {"from": {"node": "split_research", "slot": "branch_2"}, "to": {"node": "research_agent", "slot": "task"}},
+
+    {"from": {"node": "kb_search", "slot": "results"}, "to": {"node": "combine_research", "slot": "input_1"}},
+    {"from": {"node": "research_agent", "slot": "answer"}, "to": {"node": "combine_research", "slot": "input_2"}},
+
+    {"from": {"node": "combine_research", "slot": "result"}, "to": {"node": "build_final_prompt", "slot": "combined"}},
+    {"from": {"node": "build_final_prompt", "slot": "result"}, "to": {"node": "final_llm", "slot": "prompt"}},
+    {"from": {"node": "final_llm", "slot": "response"}, "to": {"node": "research_output", "slot": "text"}}
+  ]
+}
