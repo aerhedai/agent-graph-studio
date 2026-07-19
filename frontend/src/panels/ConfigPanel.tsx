@@ -35,6 +35,11 @@ export function ConfigPanel({ node, onConfigChange, connectedSubNodes }: ConfigP
   }, [node.id]);
 
   const properties = node.data.configSchema.properties ?? {};
+  // spec-014: a config field's own schema already says whether it's
+  // required (JsonSchema.required, generated straight from the Pydantic
+  // model -- ADR-001's one-schema payoff) -- this was already typed but
+  // unused by the frontend until now.
+  const requiredFields = new Set(node.data.configSchema.required ?? []);
 
   function setField(name: string, value: unknown) {
     setDraft((d) => ({ ...d, [name]: value }));
@@ -79,7 +84,10 @@ export function ConfigPanel({ node, onConfigChange, connectedSubNodes }: ConfigP
     >
       {Object.entries(properties).map(([name, propSchema]) => (
         <div key={name} className="config-panel__field">
-          <label htmlFor={`field-${name}`}>{propSchema.title ?? name}</label>
+          <label htmlFor={`field-${name}`}>
+            {propSchema.title ?? name}
+            {!requiredFields.has(name) && <span className="config-panel__optional-tag">optional</span>}
+          </label>
           {renderField(name, propSchema, draft[name], setField, draft)}
         </div>
       ))}

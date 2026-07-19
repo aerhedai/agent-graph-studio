@@ -25,8 +25,8 @@ class IngestDocumentConfig(BaseModel):
     connection: str
     embedding_model_connection: str
     embedding_model: str
-    chunk_size: int
-    chunk_overlap: int
+    chunk_size: int = 500
+    chunk_overlap: int = 50
     document_name: str | None = None
 
     @model_validator(mode="after")

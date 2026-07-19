@@ -53,7 +53,7 @@ def _resolve_mcp_slots(
     tool = find_tool(tools, config.tool_name)
     if tool is None:
         return None
-    inputs = [InputSlotSpec(name, TEXT) for name in tool.param_names]
+    inputs = [InputSlotSpec(name, TEXT, required=name in tool.required_names) for name in tool.param_names]
     outputs = [OutputSlotSpec("result", TEXT)]
     return inputs, outputs
 
@@ -84,9 +84,13 @@ def execute_mcp_call(ctx: ExecutionContext) -> NodeResult:
             raise NodeExecutionError(
                 f"MCP tool '{config.tool_name}' not found on server; available tools: {available}"
             )
+        # An unwired optional param is simply omitted here -- the MCP
+        # server applies its own default (see mcp/client.py's
+        # _list_tools_async docstring).
         arguments = {
             name: coerce_value(ctx.inputs[name], tool.param_json_types.get(name, "string"))
             for name in tool.param_names
+            if name in ctx.inputs
         }
     except NodeExecutionError:
         raise

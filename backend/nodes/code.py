@@ -25,12 +25,16 @@ class CodeSourceError(ValueError):
     """Raised when function_source doesn't define exactly one simple function."""
 
 
-def _parse_function(source: str) -> tuple[str, list[str]]:
-    """Parse function_source via ast (no execution) and return (name, param_names).
+def _parse_function(source: str) -> tuple[str, list[str], set[str]]:
+    """Parse function_source via ast (no execution) and return
+    (name, param_names, optional_names).
 
-    Requires exactly one top-level `def` with no decorators, no *args/**kwargs,
-    and no default argument values -- keeps every parameter a simple, always-
-    required text input slot. Raises CodeSourceError on any violation.
+    Requires exactly one top-level `def` with no decorators and no
+    *args/**kwargs. A parameter with a default value becomes an optional
+    input slot (optional_names) instead of being rejected -- Python's own
+    default fires when the graph leaves that slot unwired (execute_code
+    only passes kwargs actually present in ctx.inputs). Raises
+    CodeSourceError on any other violation.
     """
     try:
         tree = ast.parse(source)
@@ -50,14 +54,19 @@ def _parse_function(source: str) -> tuple[str, list[str]]:
     args = fn.args
     if args.vararg is not None or args.kwarg is not None:
         raise CodeSourceError("function_source function must not use *args/**kwargs")
-    if args.defaults or any(d is not None for d in args.kw_defaults):
-        raise CodeSourceError("function_source function must not use default argument values")
 
-    param_names = [a.arg for a in (*args.posonlyargs, *args.args, *args.kwonlyargs)]
+    positional = [*args.posonlyargs, *args.args]
+    # Defaults are always for the *trailing* N positional params (Python's
+    # own syntax rule -- a non-default param can't follow a defaulted one).
+    num_defaults = len(args.defaults)
+    optional_names = {a.arg for a in positional[len(positional) - num_defaults :]} if num_defaults else set()
+    optional_names |= {a.arg for a, d in zip(args.kwonlyargs, args.kw_defaults) if d is not None}
+
+    param_names = [a.arg for a in (*positional, *args.kwonlyargs)]
     if len(param_names) != len(set(param_names)):
         raise CodeSourceError("function_source function has duplicate parameter names")
 
-    return fn.name, param_names
+    return fn.name, param_names, optional_names
 
 
 class CodeConfig(BaseModel):
@@ -73,19 +82,20 @@ class CodeConfig(BaseModel):
 def _resolve_code_slots(
     node: NodeSpec,
 ) -> tuple[list[InputSlotSpec], list[OutputSlotSpec]] | None:
-    """Per-instance schema: one required text input per function parameter,
-    plus one fixed "result" text output. Returns None (not []) if
-    function_source can't be parsed -- [] would be indistinguishable from a
-    real zero-parameter function; None tells validation to skip this node
-    and let check_config_schema report the real error."""
+    """Per-instance schema: one text input per function parameter (required
+    unless the parameter has a Python default), plus one fixed "result" text
+    output. Returns None (not []) if function_source can't be parsed -- []
+    would be indistinguishable from a real zero-parameter function; None
+    tells validation to skip this node and let check_config_schema report
+    the real error."""
     source = node.config.get("function_source")
     if not isinstance(source, str):
         return None
     try:
-        _, param_names = _parse_function(source)
+        _, param_names, optional_names = _parse_function(source)
     except CodeSourceError:
         return None
-    inputs = [InputSlotSpec(name, TEXT) for name in param_names]
+    inputs = [InputSlotSpec(name, TEXT, required=name not in optional_names) for name in param_names]
     outputs = [OutputSlotSpec("result", TEXT)]
     return inputs, outputs
 
@@ -101,11 +111,13 @@ def _resolve_code_slots(
 def execute_code(ctx: ExecutionContext) -> NodeResult:
     config = CodeConfig.model_validate(ctx.node.config)
     try:
-        func_name, param_names = _parse_function(config.function_source)
+        func_name, param_names, _optional_names = _parse_function(config.function_source)
         namespace: dict[str, Any] = {}
         exec(compile(config.function_source, f"<code node {ctx.node.id}>", "exec"), namespace)
         fn = namespace[func_name]
-        kwargs = {name: ctx.inputs[name] for name in param_names}
+        # Only pass kwargs the graph actually wired -- an omitted optional
+        # param falls through to the function's own Python default.
+        kwargs = {name: ctx.inputs[name] for name in param_names if name in ctx.inputs}
         result = fn(**kwargs)
     except Exception as e:
         raise NodeExecutionError(f"code node execution failed: {e}") from e

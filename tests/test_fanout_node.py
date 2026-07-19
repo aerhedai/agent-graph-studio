@@ -18,8 +18,19 @@ def test_resolve_fanout_slots_produces_n_branch_outputs():
 
 
 def test_resolve_fanout_slots_returns_none_on_malformed_config():
-    node = NodeSpec(id="n1", type="fan_out", config={})
+    # worker_count now has a default (2), so an *empty* config is valid --
+    # a genuinely malformed value (fails Field(gt=0)) is what should still
+    # return None here.
+    node = NodeSpec(id="n1", type="fan_out", config={"worker_count": -1})
     assert _resolve_fanout_slots(node) is None
+
+
+def test_resolve_fanout_slots_uses_default_worker_count_when_omitted():
+    node = NodeSpec(id="n1", type="fan_out", config={})
+    resolved = _resolve_fanout_slots(node)
+    assert resolved is not None
+    _, outputs = resolved
+    assert [s.name for s in outputs] == ["branch_1", "branch_2"]
 
 
 def test_execute_fan_out_copies_value_to_all_branches():

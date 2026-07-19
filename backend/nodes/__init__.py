@@ -22,6 +22,7 @@ from backend.nodes import (  # noqa: F401
     telegram_adapter,
     text_input,
     text_output,
+    tool_group,
     uppercase_text,
     vector_search,
     webhook_trigger,

@@ -17,7 +17,7 @@ from backend.schema.types import TEXT
 
 
 class FanOutConfig(BaseModel):
-    worker_count: int = Field(gt=0)
+    worker_count: int = Field(gt=0, default=2)
 
 
 def _resolve_fanout_slots(

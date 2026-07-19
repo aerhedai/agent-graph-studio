@@ -14,7 +14,7 @@ import {
   type IsValidConnection,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fetchConnections, fetchNodeTypes, pollRun, submitRun } from "../api/client";
 import type { GraphSpec, NodeTypeInfo, RunStatusResponse } from "../api/types";
 import { graphSpecToNodesAndEdges, nodesAndEdgesToGraphSpec } from "../graph/serialize";
@@ -22,6 +22,7 @@ import { NodeInspectorPanel } from "../panels/NodeInspectorPanel";
 import {
   ConnectionTypeContext,
   GenericNode,
+  GroupActionsContext,
   SUB_NODE_HANDLE_ID,
   type GenericFlowNode,
   type GenericNodeData,
@@ -56,6 +57,39 @@ function statusForNode(nodeId: string, run: RunStatusResponse | null): NodeStatu
 function errorMessageForNode(nodeId: string, run: RunStatusResponse | null): string | null {
   if (!run) return null;
   return run.trace.find((t) => t.node_id === nodeId)?.error ?? null;
+}
+
+// spec-014: a "hybrid" node (e.g. `tool_group`) is simultaneously a root
+// (declares sub_node_slots) and a sub-node (declares subNodeRole) --
+// detected generically from those two already-known facts, never a
+// hardcoded `nodeType === "tool_group"` check, so any future hybrid
+// container type gets the same drop-to-contain treatment automatically.
+function isHybridNode(node: GenericFlowNode): boolean {
+  return Boolean(node.data.subNodeRole) && Boolean(node.data.subNodeSlots && Object.keys(node.data.subNodeSlots).length > 0);
+}
+
+// Real rendered dimensions once @xyflow/react has measured the node
+// (`node.measured`, populated after first paint); a sensible fallback
+// before that first measurement lands, matching this card's own CSS
+// (`.generic-node` min-width: 220px).
+function hybridNodeBounds(node: GenericFlowNode) {
+  return {
+    x: node.position.x,
+    y: node.position.y,
+    width: node.measured?.width ?? 220,
+    height: node.measured?.height ?? 60,
+  };
+}
+
+function nodeCenter(node: GenericFlowNode): { x: number; y: number } {
+  const width = node.measured?.width ?? 220;
+  const height = node.measured?.height ?? 60;
+  return { x: node.position.x + width / 2, y: node.position.y + height / 2 };
+}
+
+function pointInHybridBounds(point: { x: number; y: number }, node: GenericFlowNode): boolean {
+  const b = hybridNodeBounds(node);
+  return point.x >= b.x && point.x <= b.x + b.width && point.y >= b.y && point.y <= b.y + b.height;
 }
 
 function downloadJson(data: unknown, filename: string) {
@@ -130,8 +164,37 @@ function CanvasInner() {
       };
       const newNode: GenericFlowNode = { id, type: "generic", position, data };
       setNodes((nds) => [...nds, newNode]);
+
+      // spec-014 §4: the interaction is drop-to-contain, not manual
+      // wire-dragging -- dropping a node straight onto a hybrid group's
+      // card (tool_group) immediately wires it in as that group's
+      // sub-node, via an ordinary sub_node edge (kind: "sub_node", slot:
+      // "tools") under the hood. Hit-tested against every currently
+      // rendered hybrid node's real bounds; the first slot whose
+      // accepts_role matches (or accepts any role) is used.
+      const targetGroup = nodes.find((n) => isHybridNode(n) && pointInHybridBounds(position, n));
+      if (targetGroup) {
+        const slotName = Object.entries(targetGroup.data.subNodeSlots ?? {}).find(
+          ([, slot]) => slot.accepts_role === null || slot.accepts_role === (nodeTypeInfo.sub_node_role ?? null),
+        )?.[0];
+        if (slotName) {
+          setEdges((eds) =>
+            addEdge(
+              {
+                source: id,
+                sourceHandle: SUB_NODE_HANDLE_ID,
+                target: targetGroup.id,
+                targetHandle: slotName,
+                type: "status",
+                data: { targetStatus: "pending" },
+              } as Connection,
+              eds,
+            ),
+          );
+        }
+      }
     },
-    [screenToFlowPosition, setNodes],
+    [screenToFlowPosition, setNodes, setEdges, nodes],
   );
 
   const onDragOver = useCallback((event: React.DragEvent) => {
@@ -218,6 +281,109 @@ function CanvasInner() {
       }
     },
     [setEdges, setNodes, nodes, nodeTypesByName, updateNodeInternals],
+  );
+
+  // spec-014 §4: dragging an already-on-canvas free node onto a hybrid
+  // group's card contains it exactly the same way a fresh palette drop
+  // does (see onDrop above) -- both are the same "drop-to-contain"
+  // interaction, just for a node that already exists vs. one just created.
+  const onNodeDragStop = useCallback(
+    (_event: MouseEvent | TouchEvent, draggedNode: GenericFlowNode) => {
+      if (isHybridNode(draggedNode)) return; // no nested groups in this pass (spec-014 §3)
+      const alreadyContained = edges.some(
+        (e) => e.source === draggedNode.id && e.sourceHandle === SUB_NODE_HANDLE_ID,
+      );
+      if (alreadyContained) return;
+      const center = nodeCenter(draggedNode);
+      const targetGroup = nodes.find(
+        (n) => n.id !== draggedNode.id && isHybridNode(n) && pointInHybridBounds(center, n),
+      );
+      if (!targetGroup) return;
+      const slotName = Object.entries(targetGroup.data.subNodeSlots ?? {}).find(
+        ([, slot]) => slot.accepts_role === null || slot.accepts_role === (draggedNode.data.subNodeRole ?? null),
+      )?.[0];
+      if (!slotName) return;
+      setEdges((eds) =>
+        addEdge(
+          {
+            source: draggedNode.id,
+            sourceHandle: SUB_NODE_HANDLE_ID,
+            target: targetGroup.id,
+            targetHandle: slotName,
+            type: "status",
+            data: { targetStatus: "pending" },
+          } as Connection,
+          eds,
+        ),
+      );
+    },
+    [nodes, edges, setEdges],
+  );
+
+  // spec-014: removes a tool from its group, re-materializing it as an
+  // ordinary, independently positioned canvas node (the underlying node
+  // was never actually deleted from state -- only its containing
+  // sub_node edge is). Nudged clear of the group card so it doesn't land
+  // invisibly stacked underneath it.
+  const removeFromGroup = useCallback(
+    (nodeId: string) => {
+      const groupEdge = edges.find((e) => e.source === nodeId && e.sourceHandle === SUB_NODE_HANDLE_ID);
+      const group = groupEdge ? nodes.find((n) => n.id === groupEdge.target) : undefined;
+      setEdges((eds) => eds.filter((e) => !(e.source === nodeId && e.sourceHandle === SUB_NODE_HANDLE_ID)));
+      if (group) {
+        setNodes((nds) =>
+          nds.map((n) =>
+            n.id === nodeId ? { ...n, position: { x: group.position.x + 260, y: group.position.y } } : n,
+          ),
+        );
+      }
+    },
+    [edges, nodes, setEdges, setNodes],
+  );
+
+  // spec-014 §4: containment is derived entirely from the graph's own
+  // sub_node edges (source = the contained tool, sourceHandle =
+  // SUB_NODE_HANDLE_ID, target = a hybrid group node) -- never a separate
+  // "which group am I in" field on node state, so save/load and the
+  // rendered canvas can never drift out of sync with each other.
+  const containedBy = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const e of edges) {
+      if (e.sourceHandle !== SUB_NODE_HANDLE_ID) continue;
+      const target = nodes.find((n) => n.id === e.target);
+      if (target && isHybridNode(target)) map[e.source] = e.target;
+    }
+    return map;
+  }, [edges, nodes]);
+
+  const groupContents = useMemo(() => {
+    const map: Record<string, { id: string; nodeType: string; category: string }[]> = {};
+    for (const [childId, groupId] of Object.entries(containedBy)) {
+      const child = nodes.find((n) => n.id === childId);
+      if (!child) continue;
+      (map[groupId] ??= []).push({ id: child.id, nodeType: child.data.nodeType, category: child.data.category });
+    }
+    return map;
+  }, [containedBy, nodes]);
+
+  // The rendered node/edge lists React Flow actually draws: a contained
+  // tool is hidden entirely (represented only by its row inside the
+  // group's card instead), and a hybrid node's data is enriched with its
+  // real current contents. Full `nodes`/`edges` state remains the
+  // save/load source of truth untouched (spec-014 §4).
+  const visibleNodes = useMemo(
+    () =>
+      nodes
+        .filter((n) => !(n.id in containedBy))
+        .map((n) =>
+          isHybridNode(n) ? { ...n, data: { ...n.data, containedNodes: groupContents[n.id] ?? [] } } : n,
+        ),
+    [nodes, containedBy, groupContents],
+  );
+
+  const visibleEdges = useMemo(
+    () => edges.filter((e) => !(e.source in containedBy) && !(e.target in containedBy)),
+    [edges, containedBy],
   );
 
   // --- run + live trace polling (spec-005 §4/§6) -----------------------
@@ -331,6 +497,9 @@ function CanvasInner() {
 
   return (
     <ConnectionTypeContext.Provider value={connectionTypeByName}>
+      <GroupActionsContext.Provider
+        value={{ selectNode: setSelectedNodeId, removeFromGroup }}
+      >
       <div className="app-layout">
         <Palette />
         <div className="canvas-column">
@@ -365,13 +534,14 @@ function CanvasInner() {
           </div>
           <div className="canvas-wrapper" onDrop={onDrop} onDragOver={onDragOver}>
             <ReactFlow
-              nodes={nodes}
-              edges={edges}
+              nodes={visibleNodes}
+              edges={visibleEdges}
               nodeTypes={nodeTypes}
               edgeTypes={edgeTypes}
               onNodesChange={onNodesChange}
               onEdgesChange={onEdgesChange}
               onConnect={onConnect}
+              onNodeDragStop={onNodeDragStop}
               isValidConnection={isValidConnection}
               onNodeClick={(_, node) => setSelectedNodeId(node.id)}
               onPaneClick={() => setSelectedNodeId(null)}
@@ -407,6 +577,7 @@ function CanvasInner() {
           }}
         />
       </div>
+      </GroupActionsContext.Provider>
     </ConnectionTypeContext.Provider>
   );
 }

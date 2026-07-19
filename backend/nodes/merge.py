@@ -24,7 +24,7 @@ from backend.schema.types import TEXT
 
 
 class MergeConfig(BaseModel):
-    expected_input_count: int = Field(gt=0)
+    expected_input_count: int = Field(gt=0, default=2)
 
 
 def _resolve_merge_slots(
