@@ -97,6 +97,7 @@ export async function graphSpecToNodesAndEdges(
 
       const data: GenericNodeData = {
         nodeType: n.type,
+        category: typeInfo.category,
         config: n.config,
         configSchema: typeInfo.config_schema,
         inputs,
@@ -124,6 +125,8 @@ export async function graphSpecToNodesAndEdges(
         sourceHandle: SUB_NODE_HANDLE_ID,
         target: e.to.node,
         targetHandle: e.slot,
+        type: "status",
+        data: { targetStatus: "pending" },
       };
     }
     return {
@@ -132,6 +135,8 @@ export async function graphSpecToNodesAndEdges(
       sourceHandle: e.from.slot,
       target: e.to.node,
       targetHandle: e.to.slot,
+      type: "status",
+      data: { targetStatus: "pending" },
     };
   });
 

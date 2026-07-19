@@ -17,6 +17,7 @@ class TextInputConfig(BaseModel):
     inputs=[],
     outputs=[OutputSlotSpec("text", TEXT)],
     config_model=TextInputConfig,
+    category="core",
 )
 def execute_text_input(ctx: ExecutionContext) -> NodeResult:
     config = TextInputConfig.model_validate(ctx.node.config)

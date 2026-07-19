@@ -16,6 +16,7 @@ export interface SubNodeSlotInfo {
 
 export interface NodeTypeInfo {
   type: string;
+  category: string;
   config_schema: JsonSchema;
   dynamic_schema: boolean;
   inputs: SlotInfo[];

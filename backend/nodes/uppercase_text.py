@@ -17,6 +17,7 @@ class UppercaseTextConfig(BaseModel):
     inputs=[InputSlotSpec("text", TEXT)],
     outputs=[OutputSlotSpec("text", TEXT)],
     config_model=UppercaseTextConfig,
+    category="core",
 )
 def execute_uppercase_text(ctx: ExecutionContext) -> NodeResult:
     UppercaseTextConfig.model_validate(ctx.node.config)

@@ -95,6 +95,7 @@ def _resolve_code_slots(
     inputs=[],
     outputs=[],
     config_model=CodeConfig,
+    category="core",
     resolve_slots=_resolve_code_slots,
 )
 def execute_code(ctx: ExecutionContext) -> NodeResult:

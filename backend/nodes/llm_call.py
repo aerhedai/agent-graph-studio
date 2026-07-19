@@ -22,6 +22,7 @@ class LLMCallConfig(BaseModel):
     inputs=[InputSlotSpec("prompt", TEXT)],
     outputs=[OutputSlotSpec("response", TEXT)],
     config_model=LLMCallConfig,
+    category="ai",
 )
 def execute_llm_call(ctx: ExecutionContext) -> NodeResult:
     config = LLMCallConfig.model_validate(ctx.node.config)

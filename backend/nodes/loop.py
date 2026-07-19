@@ -50,6 +50,7 @@ def _find_entry_node_id(sub_graph: GraphSpec) -> str:
     inputs=[InputSlotSpec("value", TEXT)],
     outputs=[OutputSlotSpec("value", TEXT)],
     config_model=LoopConfig,
+    category="core",
 )
 def execute_loop(ctx: ExecutionContext) -> NodeResult:
     # Local import: no actual import cycle exists (execution.engine never

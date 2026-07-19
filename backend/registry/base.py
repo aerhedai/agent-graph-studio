@@ -49,6 +49,16 @@ class NodeDefinition:
     outputs: list[OutputSlotSpec]
     config_model: type[BaseModel]
     execute: Callable[..., Any]
+    category: str
+    """spec-013 §4/§5: which palette section this type belongs to (e.g.
+    "triggers", "core", "ai", "data", "connectivity") -- required, not
+    optional, so a new node type can't silently end up uncategorized in
+    the palette. Canonical lowercase keys, matched against a frontend-side
+    {label, color, icon} map (same pattern already established for
+    connection `category` values "local"/"cloud", spec-006). The palette
+    itself derives its section list from whatever categories are actually
+    present across registered types, never a hardcoded list here or on
+    the frontend."""
     result_slot: str | None = None
     resolve_slots: ResolveSlots | None = None
     """Optional per-instance schema resolver, for node types whose actual

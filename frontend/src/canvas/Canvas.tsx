@@ -15,11 +15,12 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchNodeTypes, pollRun, submitRun } from "../api/client";
+import { fetchConnections, fetchNodeTypes, pollRun, submitRun } from "../api/client";
 import type { GraphSpec, NodeTypeInfo, RunStatusResponse } from "../api/types";
 import { graphSpecToNodesAndEdges, nodesAndEdgesToGraphSpec } from "../graph/serialize";
 import { NodeInspectorPanel } from "../panels/NodeInspectorPanel";
 import {
+  ConnectionTypeContext,
   GenericNode,
   SUB_NODE_HANDLE_ID,
   type GenericFlowNode,
@@ -27,9 +28,11 @@ import {
   type NodeStatus,
 } from "./GenericNode";
 import { Palette } from "./Palette";
+import { StatusEdge } from "./StatusEdge";
 import { slotTypesCompatible } from "./typeCompat";
 
 const nodeTypes = { generic: GenericNode };
+const edgeTypes = { status: StatusEdge };
 const POLL_INTERVAL_MS = 500;
 
 let idCounter = 0;
@@ -44,6 +47,15 @@ function statusForNode(nodeId: string, run: RunStatusResponse | null): NodeStatu
   if (record) return record.error ? "error" : "success";
   if (run.running_node_ids.includes(nodeId)) return "running";
   return "pending";
+}
+
+// spec-013 §7 (resolved open question, adopted its own "yes" recommendation):
+// a failed node shows its error message via a short inline hover tooltip for
+// immediate visibility, in addition to the full detail already available in
+// the trace inspector panel -- real trace data, not a placeholder string.
+function errorMessageForNode(nodeId: string, run: RunStatusResponse | null): string | null {
+  if (!run) return null;
+  return run.trace.find((t) => t.node_id === nodeId)?.error ?? null;
 }
 
 function downloadJson(data: unknown, filename: string) {
@@ -64,6 +76,7 @@ function CanvasInner() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [nodeTypesByName, setNodeTypesByName] = useState<Record<string, NodeTypeInfo>>({});
+  const [connectionTypeByName, setConnectionTypeByName] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const { screenToFlowPosition } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
@@ -74,6 +87,18 @@ function CanvasInner() {
     fetchNodeTypes()
       .then((types) => setNodeTypesByName(Object.fromEntries(types.map((t) => [t.type, t]))))
       .catch((e: unknown) => setLoadError(String(e)));
+  }, []);
+
+  useEffect(() => {
+    // spec-013 §5: a node's badge shows its connection's *type* (e.g.
+    // "ollama"), not just its name -- presentation-only lookup, so a
+    // fetch failure here shouldn't block the canvas from working; nodes
+    // simply render without a connection badge.
+    fetchConnections()
+      .then((connections) =>
+        setConnectionTypeByName(Object.fromEntries(connections.map((c) => [c.name, c.type]))),
+      )
+      .catch((e: unknown) => console.error("Failed to load connections for node badges:", e));
   }, []);
 
   useEffect(() => {
@@ -92,6 +117,7 @@ function CanvasInner() {
       const id = nextNodeId(nodeTypeInfo.type);
       const data: GenericNodeData = {
         nodeType: nodeTypeInfo.type,
+        category: nodeTypeInfo.category,
         config: {},
         configSchema: nodeTypeInfo.config_schema,
         inputs: nodeTypeInfo.dynamic_schema ? [] : nodeTypeInfo.inputs,
@@ -175,7 +201,7 @@ function CanvasInner() {
   // stale-handle finding from spec-005).
   const onConnect = useCallback(
     (connection: Connection) => {
-      setEdges((eds) => addEdge(connection, eds));
+      setEdges((eds) => addEdge({ ...connection, type: "status", data: { targetStatus: "pending" } }, eds));
 
       if (connection.sourceHandle === SUB_NODE_HANDLE_ID) {
         const targetNode = nodes.find((n) => n.id === connection.target);
@@ -198,10 +224,31 @@ function CanvasInner() {
   const applyRunToNodes = useCallback(
     (nextRun: RunStatusResponse) => {
       setNodes((nds) =>
-        nds.map((n) => ({ ...n, data: { ...n.data, status: statusForNode(n.id, nextRun) } })),
+        nds.map((n) => ({
+          ...n,
+          data: {
+            ...n.data,
+            status: statusForNode(n.id, nextRun),
+            errorMessage: errorMessageForNode(n.id, nextRun),
+          },
+        })),
       );
     },
     [setNodes],
+  );
+
+  // spec-013 §5: a data edge's color/animation mirrors its *target* node's
+  // real current status -- the exact same statusForNode fact GenericNode's
+  // own pulse/settle animation is driven by, never a separate/decorative
+  // signal. sub_node edges ignore this entirely (StatusEdge always renders
+  // them dashed/violet regardless of targetStatus).
+  const applyRunToEdges = useCallback(
+    (nextRun: RunStatusResponse) => {
+      setEdges((eds) =>
+        eds.map((e) => ({ ...e, data: { ...e.data, targetStatus: statusForNode(e.target, nextRun) } })),
+      );
+    },
+    [setEdges],
   );
 
   const pollUntilDone = useCallback(
@@ -210,20 +257,22 @@ function CanvasInner() {
         .then((status) => {
           setRun(status);
           applyRunToNodes(status);
+          applyRunToEdges(status);
           if (status.status === "running") {
             pollTimeoutRef.current = window.setTimeout(() => pollUntilDone(runId), POLL_INTERVAL_MS);
           }
         })
         .catch((e: unknown) => setRunError(String(e)));
     },
-    [applyRunToNodes],
+    [applyRunToNodes, applyRunToEdges],
   );
 
   async function handleRun() {
     setIsSubmitting(true);
     setRunError(null);
     setRun(null);
-    setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, status: "pending" } })));
+    setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, status: "pending", errorMessage: null } })));
+    setEdges((eds) => eds.map((e) => ({ ...e, data: { ...e.data, targetStatus: "pending" } })));
     try {
       const graph = nodesAndEdgesToGraphSpec(nodes, edges);
       const submitted = await submitRun(graph);
@@ -281,81 +330,84 @@ function CanvasInner() {
     : [];
 
   return (
-    <div className="app-layout">
-      <Palette />
-      <div className="canvas-column">
-        <div className="run-bar">
-          <button type="button" onClick={() => void handleRun()} disabled={isSubmitting || run?.status === "running"}>
-            {run?.status === "running" ? "Running..." : "Run"}
-          </button>
-          <button type="button" onClick={handleSave} className="run-bar__secondary">
-            Save
-          </button>
-          <button
-            type="button"
-            className="run-bar__secondary"
-            onClick={() => fileInputRef.current?.click()}
-          >
-            Load
-          </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="application/json"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void handleLoadFile(file);
-              e.target.value = "";
-            }}
-          />
-          {run && <span className={`run-bar__status status-${run.status}`}>{run.status}</span>}
-          {runError && <span className="run-bar__error">{runError}</span>}
-          {loadError && <span className="run-bar__error">{loadError}</span>}
+    <ConnectionTypeContext.Provider value={connectionTypeByName}>
+      <div className="app-layout">
+        <Palette />
+        <div className="canvas-column">
+          <div className="run-bar">
+            <button type="button" onClick={() => void handleRun()} disabled={isSubmitting || run?.status === "running"}>
+              {run?.status === "running" ? "Running..." : "Run"}
+            </button>
+            <button type="button" onClick={handleSave} className="run-bar__secondary">
+              Save
+            </button>
+            <button
+              type="button"
+              className="run-bar__secondary"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Load
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/json"
+              style={{ display: "none" }}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void handleLoadFile(file);
+                e.target.value = "";
+              }}
+            />
+            {run && <span className={`run-bar__status status-${run.status}`}>{run.status}</span>}
+            {runError && <span className="run-bar__error">{runError}</span>}
+            {loadError && <span className="run-bar__error">{loadError}</span>}
+          </div>
+          <div className="canvas-wrapper" onDrop={onDrop} onDragOver={onDragOver}>
+            <ReactFlow
+              nodes={nodes}
+              edges={edges}
+              nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              isValidConnection={isValidConnection}
+              onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+              onPaneClick={() => setSelectedNodeId(null)}
+              defaultViewport={{ x: 0, y: 0, zoom: 1 }}
+            >
+              <Background />
+              <Controls />
+              <MiniMap />
+            </ReactFlow>
+          </div>
         </div>
-        <div className="canvas-wrapper" onDrop={onDrop} onDragOver={onDragOver}>
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            isValidConnection={isValidConnection}
-            onNodeClick={(_, node) => setSelectedNodeId(node.id)}
-            onPaneClick={() => setSelectedNodeId(null)}
-            defaultViewport={{ x: 0, y: 0, zoom: 1 }}
-          >
-            <Background />
-            <Controls />
-            <MiniMap />
-          </ReactFlow>
-        </div>
+        <NodeInspectorPanel
+          node={selectedNode}
+          traceRecord={selectedTraceRecord}
+          hasRun={run !== null}
+          connectedSubNodes={connectedSubNodes}
+          onConfigChange={(nodeId, config, inputs, outputs) => {
+            setNodes((nds) =>
+              nds.map((n) =>
+                n.id === nodeId ? { ...n, data: { ...n.data, config, inputs, outputs } } : n,
+              ),
+            );
+            // @xyflow/react caches each node's Handle positions internally and
+            // doesn't auto-detect newly-added/removed <Handle> DOM elements
+            // when a dynamic-schema node's ports change after mount (code,
+            // mcp_call, fan_out, merge -- SPEC-002's resolve_slots resolved
+            // over HTTP, here, well after initial render). Without this call,
+            // edges connected to a handle that didn't exist at mount time
+            // silently fail to render (they DO exist in state, just not
+            // drawn) -- confirmed by direct inspection during Phase 2
+            // verification, not a hypothetical.
+            updateNodeInternals(nodeId);
+          }}
+        />
       </div>
-      <NodeInspectorPanel
-        node={selectedNode}
-        traceRecord={selectedTraceRecord}
-        hasRun={run !== null}
-        connectedSubNodes={connectedSubNodes}
-        onConfigChange={(nodeId, config, inputs, outputs) => {
-          setNodes((nds) =>
-            nds.map((n) =>
-              n.id === nodeId ? { ...n, data: { ...n.data, config, inputs, outputs } } : n,
-            ),
-          );
-          // @xyflow/react caches each node's Handle positions internally and
-          // doesn't auto-detect newly-added/removed <Handle> DOM elements
-          // when a dynamic-schema node's ports change after mount (code,
-          // mcp_call, fan_out, merge -- SPEC-002's resolve_slots resolved
-          // over HTTP, here, well after initial render). Without this call,
-          // edges connected to a handle that didn't exist at mount time
-          // silently fail to render (they DO exist in state, just not
-          // drawn) -- confirmed by direct inspection during Phase 2
-          // verification, not a hypothetical.
-          updateNodeInternals(nodeId);
-        }}
-      />
-    </div>
+    </ConnectionTypeContext.Provider>
   );
 }
 

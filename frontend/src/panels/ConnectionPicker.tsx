@@ -1,3 +1,4 @@
+import { ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createConnection, fetchConnectionTypes, fetchConnections, testConnection } from "../api/client";
 import type { ConnectionInfo, ConnectionTypeInfo } from "../api/types";
@@ -107,21 +108,24 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
       {loadError && <div className="config-panel__error">{loadError}</div>}
 
       <div className="connection-picker__row">
-        <select
-          id="field-connection"
-          value={value ?? ""}
-          onChange={(e) => onChange(e.target.value)}
-        >
-          <option value="" disabled>
-            Select a connection...
-          </option>
-          {connections.map((c) => (
-            <option key={c.name} value={c.name}>
-              {c.name} ({c.type})
+        <span className="select-wrap">
+          <select
+            id="field-connection"
+            value={value ?? ""}
+            onChange={(e) => onChange(e.target.value)}
+          >
+            <option value="" disabled>
+              Select connection...
             </option>
-          ))}
-        </select>
-        <button type="button" className="connection-picker__new-btn" onClick={() => setShowForm((s) => !s)}>
+            {connections.map((c) => (
+              <option key={c.name} value={c.name}>
+                {c.name} ({c.type})
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="select-wrap__chevron" size={14} />
+        </span>
+        <button type="button" className="btn btn--secondary" onClick={() => setShowForm((s) => !s)}>
           {showForm ? "Cancel" : "+ New connection"}
         </button>
       </div>
@@ -142,20 +146,23 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
           </div>
 
           {typesInActiveCategory.length > 1 && (
-            <select
-              value={activeType ?? ""}
-              onChange={(e) => {
-                setActiveType(e.target.value);
-                setDraftConfig({});
-                setTestResult(null);
-              }}
-            >
-              {typesInActiveCategory.map((t) => (
-                <option key={t.type} value={t.type}>
-                  {t.type}
-                </option>
-              ))}
-            </select>
+            <span className="select-wrap">
+              <select
+                value={activeType ?? ""}
+                onChange={(e) => {
+                  setActiveType(e.target.value);
+                  setDraftConfig({});
+                  setTestResult(null);
+                }}
+              >
+                {typesInActiveCategory.map((t) => (
+                  <option key={t.type} value={t.type}>
+                    {t.type}
+                  </option>
+                ))}
+              </select>
+              <ChevronDown className="select-wrap__chevron" size={14} />
+            </span>
           )}
 
           <div className="config-panel__field">
@@ -187,11 +194,17 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
           {formError && <div className="config-panel__error">{formError}</div>}
 
           <div className="connection-picker__form-actions">
-            <button type="button" onClick={() => void handleTest()} disabled={testing || !activeType}>
+            <button
+              type="button"
+              className="btn btn--secondary"
+              onClick={() => void handleTest()}
+              disabled={testing || !activeType}
+            >
               {testing ? "Testing..." : "Test Connection"}
             </button>
             <button
               type="button"
+              className="btn btn--primary"
               onClick={() => void handleSaveNewConnection()}
               disabled={saving || !testResult?.success || !draftName}
             >

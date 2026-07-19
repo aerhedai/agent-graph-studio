@@ -20,6 +20,7 @@ def register_node(
     inputs: list[InputSlotSpec],
     outputs: list[OutputSlotSpec],
     config_model: type[BaseModel],
+    category: str,
     result_slot: str | None = None,
     resolve_slots: ResolveSlots | None = None,
     sub_node_slots: dict[str, SubNodeSlotSpec] | None = None,
@@ -30,6 +31,9 @@ def register_node(
     """Decorator bundling a node type's input/output/config schema and its
     execution function into one NodeDefinition, registered as an import
     side effect (ARCHITECTURE.md §3).
+
+    `category` (spec-013 §4/§5): required -- which palette section this
+    type belongs to. See NodeDefinition's own docstring.
 
     `result_slot`, if set, names one of this type's own input slots whose
     value the engine should capture into the graph-level result when this
@@ -53,6 +57,7 @@ def register_node(
                 outputs=outputs,
                 config_model=config_model,
                 execute=execute_fn,
+                category=category,
                 result_slot=result_slot,
                 resolve_slots=resolve_slots,
                 sub_node_slots=sub_node_slots,

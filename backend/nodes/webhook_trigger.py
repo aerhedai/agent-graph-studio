@@ -37,6 +37,7 @@ class WebhookTriggerConfig(BaseModel):
     inputs=[],
     outputs=[],
     config_model=WebhookTriggerConfig,
+    category="triggers",
     sub_node_slots={
         "trigger_adapter": SubNodeSlotSpec(cardinality="one", accepts_role="trigger_adapter"),
     },

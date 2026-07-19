@@ -24,6 +24,7 @@ def test_register_and_get(fresh_registry: NodeRegistry):
             outputs=[OutputSlotSpec("out", TEXT)],
             config_model=_DummyConfig,
             execute=_dummy_execute,
+            category="core",
         )
     )
     definition = fresh_registry.get("dummy")
@@ -42,6 +43,7 @@ def test_duplicate_registration_raises(fresh_registry: NodeRegistry):
         outputs=[],
         config_model=_DummyConfig,
         execute=_dummy_execute,
+        category="core",
     )
     fresh_registry.register(definition)
     with pytest.raises(ValueError):
@@ -54,6 +56,7 @@ def test_register_node_decorator_registers_into_given_registry(fresh_registry: N
         inputs=[],
         outputs=[OutputSlotSpec("out", TEXT)],
         config_model=_DummyConfig,
+        category="core",
         registry=fresh_registry,
     )
     def execute_decorated(ctx):

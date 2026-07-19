@@ -86,6 +86,7 @@ def test_type_mismatch_rejected(fresh_registry: NodeRegistry):
             outputs=[OutputSlotSpec("out", json_out)],
             config_model=EmptyConfig,
             execute=lambda ctx: None,
+            category="core",
         )
     )
     fresh_registry.register(
@@ -95,6 +96,7 @@ def test_type_mismatch_rejected(fresh_registry: NodeRegistry):
             outputs=[],
             config_model=EmptyConfig,
             execute=lambda ctx: None,
+            category="core",
         )
     )
 

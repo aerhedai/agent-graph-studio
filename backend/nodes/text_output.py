@@ -17,6 +17,7 @@ class TextOutputConfig(BaseModel):
     inputs=[InputSlotSpec("text", TEXT)],
     outputs=[],
     config_model=TextOutputConfig,
+    category="core",
     result_slot="text",
 )
 def execute_text_output(ctx: ExecutionContext) -> NodeResult:

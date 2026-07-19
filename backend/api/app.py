@@ -107,6 +107,7 @@ def list_node_types() -> list[NodeTypeInfo]:
         infos.append(
             NodeTypeInfo(
                 type=type_name,
+                category=definition.category,
                 config_schema=definition.config_model.model_json_schema(),
                 dynamic_schema=is_dynamic,
                 inputs=inputs,

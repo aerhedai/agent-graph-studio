@@ -138,6 +138,7 @@ def _run_tool(
     inputs=[InputSlotSpec("task", TEXT)],
     outputs=[OutputSlotSpec("answer", TEXT)],
     config_model=AgentConfig,
+    category="ai",
     sub_node_slots={
         "model": SubNodeSlotSpec(cardinality="one", accepts_role="model"),
         "memory": SubNodeSlotSpec(cardinality="zero_or_one", accepts_role="memory"),

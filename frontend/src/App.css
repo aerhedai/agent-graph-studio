@@ -6,7 +6,7 @@
 
 .app__header {
   padding: 8px 16px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
 }
 
@@ -17,7 +17,7 @@
 .app-layout {
   flex: 1;
   display: grid;
-  grid-template-columns: 220px 1fr 320px;
+  grid-template-columns: 240px 1fr 320px;
   min-height: 0;
 }
 
@@ -32,7 +32,8 @@
   flex: 1;
   min-width: 0;
   min-height: 0;
-  border-inline: 1px solid var(--border);
+  border-inline: 1px solid var(--color-border);
+  background: var(--color-canvas);
 }
 
 /* --- run bar --- */
@@ -42,18 +43,23 @@
   align-items: center;
   gap: 10px;
   padding: 6px 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--color-border);
   flex-shrink: 0;
 }
 
 .run-bar button {
   font: inherit;
   padding: 6px 16px;
-  border-radius: 4px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: white;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-canvas);
   cursor: pointer;
+  transition: filter 150ms var(--ease-standard);
+}
+
+.run-bar button:hover:not(:disabled) {
+  filter: brightness(1.1);
 }
 
 .run-bar button:disabled {
@@ -62,9 +68,9 @@
 }
 
 .run-bar button.run-bar__secondary {
-  background: var(--bg);
-  color: var(--text);
-  border-color: var(--border);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-color: var(--color-border);
 }
 
 .run-bar__status {
@@ -73,7 +79,7 @@
   text-transform: uppercase;
   letter-spacing: 0.03em;
   padding: 2px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .run-bar__status.status-running {
@@ -94,64 +100,215 @@
   font-size: 12px;
 }
 
-/* --- palette --- */
+/* --- spec-013: palette. Categorized collapsible accordions (driven
+   entirely by each type's real `category` field, never a hardcoded
+   section list) plus a search/filter box, replacing the old flat list. --- */
 
 .palette {
   overflow-y: auto;
-  padding: 12px;
-  background: var(--panel-bg);
+  padding: var(--space-4);
+  background: var(--color-surface);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.palette__label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-muted);
+}
+
+.palette__search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--color-canvas);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  transition: border-color 150ms var(--ease-standard);
+  color: var(--color-text-muted);
+}
+
+.palette__search:focus-within {
+  border-color: var(--color-border-strong);
+}
+
+.palette__search input {
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--color-text);
+  font: inherit;
+  font-size: 12.5px;
+  width: 100%;
+}
+
+.palette__search input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.palette-category {
+  display: flex;
+  flex-direction: column;
+}
+
+.palette-category__header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  cursor: pointer;
+  user-select: none;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  width: 100%;
+  text-align: left;
+}
+
+.palette-category__header:disabled {
+  cursor: default;
+}
+
+.palette-category__chevron {
+  transition: transform 220ms var(--ease-standard);
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.palette-category--open .palette-category__chevron {
+  transform: rotate(90deg);
+}
+
+.palette-category__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.palette-category__name {
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  flex: 1;
+}
+
+.palette-category__count {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  background: var(--color-surface-raised);
+  border-radius: var(--radius-pill);
+  padding: 1px 7px;
+}
+
+/* CSS-grid accordion trick: animating a fr-unit row track gives a smooth
+   auto-height transition without measuring pixel heights in JS. */
+.palette-category__body {
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 220ms var(--ease-standard);
+  overflow: hidden;
+}
+
+.palette-category:not(.palette-category--open) .palette-category__body {
+  grid-template-rows: 0fr;
+}
+
+.palette-category__body-inner {
+  overflow: hidden;
+  min-height: 0;
 }
 
 .palette__list {
   list-style: none;
-  margin: 0;
+  margin: var(--space-2) 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 .palette__item {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+  padding-left: 18px;
   cursor: grab;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  font-size: 13px;
-  background: var(--bg);
+  gap: var(--space-2);
+  font-size: 12.5px;
+  transition: background 120ms var(--ease-standard), transform 150ms var(--ease-spring);
+}
+
+.palette__item:hover {
+  background: var(--color-surface-raised);
+  transform: translateX(2px);
 }
 
 .palette__item:active {
   cursor: grabbing;
 }
 
+.palette__item-icon-chip {
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--node-accent) 18%, var(--color-surface));
+  color: var(--node-accent);
+}
+
+.palette__item-name {
+  flex: 1;
+  color: var(--color-text);
+}
+
 .palette__badge {
-  font-size: 10px;
+  font-size: 9px;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  padding: 1px 4px;
+  letter-spacing: 0.03em;
+  color: var(--color-accent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+  border-radius: var(--radius-pill);
+  padding: 1px 6px;
+  flex-shrink: 0;
 }
 
 .palette__error {
   color: var(--status-error);
   font-size: 12px;
-  margin-bottom: 8px;
 }
 
-/* --- generic node --- */
+/* --- generic node (spec-013 anatomy: icon chip + title + subtitle + badge,
+   replacing spec-012's centered-title-only card) --- */
 
 .generic-node {
   position: relative;
-  min-width: 210px;
-  border: 2px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel-bg);
+  min-width: 220px;
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
   font-size: 12px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  transition:
+    transform 150ms var(--ease-spring),
+    box-shadow 150ms var(--ease-standard),
+    border-color 150ms var(--ease-standard);
+}
+
+.generic-node:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 22px rgba(0, 0, 0, 0.45);
 }
 
 .generic-node__body {
@@ -161,60 +318,123 @@
 /* Flowchart-style shapes: a "start" node (no data inputs -- text_input,
    schedule_trigger, webhook_trigger) gets a semicircular left edge with a
    flat vertical right edge; a "terminator" node (no data outputs --
-   text_output) gets the mirror image. Every other node (including model/
-   memory, which have no data ports on either side) keeps the ordinary
+   text_output) gets the mirror image. Every other node keeps the ordinary
    rounded-rectangle shape. A fixed large radius always clamps to a true
-   semicircle regardless of the node's actual (port-count-dependent)
-   height, so this needs no per-node height math. */
+   semicircle regardless of the node's actual height. */
 .generic-node--start {
-  border-radius: 999px 8px 8px 999px;
+  border-radius: var(--radius-pill) var(--radius-md) var(--radius-md) var(--radius-pill);
 }
 
 .generic-node--terminator {
-  border-radius: 8px 999px 999px 8px;
+  border-radius: var(--radius-md) var(--radius-pill) var(--radius-pill) var(--radius-md);
 }
 
-/* Selection and live run status are both expressed as the shape's own
-   outline (color + thickness), not a separate header bar -- there is no
-   header bar anymore, see .generic-node__title below. Status wins over
-   mere selection (source order: status rules follow .selected) since
-   seeing a node's real running/success/error state matters more than
-   showing it's the currently-selected one. */
 .generic-node.selected {
-  border-color: var(--accent);
+  border-color: var(--color-accent);
 }
 
 .generic-node.status-running {
   border-color: var(--status-running);
-  border-width: 4px;
+  border-width: 3px;
+  animation: node-breathe 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 .generic-node.status-success {
   border-color: var(--status-success);
-  border-width: 4px;
+  border-width: 3px;
+  animation: node-settle 350ms var(--ease-spring);
 }
 .generic-node.status-error {
   border-color: var(--status-error);
-  border-width: 4px;
+  border-width: 3px;
+  animation: node-settle 350ms var(--ease-spring);
 }
 
-/* The node type name, dead-centered over the whole shape (not a top
-   header bar) -- absolutely positioned so it never competes for layout
-   space with the edge-hugging port labels, regardless of port count.
-   `white-space: nowrap` + a min-width generous enough for this project's
-   longest real type name (conditional_branch, 18 chars) keeps every name
-   on one line rather than wrapping. `pointer-events: none` lets clicks
-   pass through to the node body underneath for selection. */
-.generic-node__title {
-  position: absolute;
-  inset: 0;
+@keyframes node-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35), 0 0 0 color-mix(in srgb, var(--status-running) 0%, transparent);
+  }
+  50% {
+    transform: scale(1.015);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35), 0 0 20px color-mix(in srgb, var(--status-running) 35%, transparent);
+  }
+}
+
+@keyframes node-settle {
+  0% {
+    transform: scale(1.05);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.generic-node__header {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+
+.generic-node__icon-chip {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--node-accent) 18%, var(--color-surface));
+  color: var(--node-accent);
+}
+
+.generic-node__icon-chip svg {
+  width: 15px;
+  height: 15px;
+}
+
+.generic-node__titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.generic-node__title {
   font-weight: 600;
+  font-size: 12.5px;
+  letter-spacing: -0.01em;
   white-space: nowrap;
-  padding: 0 10px;
-  pointer-events: none;
-  z-index: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.generic-node__subtitle {
+  font-size: 10.5px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+
+.generic-node__badge {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 2px 6px;
+  border-radius: var(--radius-pill);
+  flex-shrink: 0;
+  white-space: nowrap;
+  background: color-mix(in srgb, var(--node-accent) 20%, var(--color-surface));
+  color: var(--node-accent);
+  border: 1px solid color-mix(in srgb, var(--node-accent) 45%, transparent);
+}
+
+.generic-node__badge--cluster {
+  background: color-mix(in srgb, var(--color-text) 12%, transparent);
+  color: var(--color-text-muted);
+  border-color: var(--color-border-strong);
 }
 
 .generic-node__port {
@@ -235,10 +455,21 @@
 }
 
 .generic-node__slot-label {
-  font-size: 10px;
+  font-size: 10.5px;
   margin: 0 6px;
-  color: var(--text);
-  opacity: 0.8;
+  color: var(--color-text-muted);
+}
+
+/* Regular data-port handles: react-flow's own default (a near-black dot
+   with a stark white ring, --xy-handle-*-color-default) reads as an
+   un-themed foreign element against this palette -- replaced with the same
+   muted dot language as the rest of the anatomy. */
+.generic-node__port--in .react-flow__handle,
+.generic-node__port--out .react-flow__handle {
+  width: 7px;
+  height: 7px;
+  background-color: var(--color-border-strong);
+  border: 1px solid var(--color-canvas);
 }
 
 .generic-node__hint {
@@ -248,21 +479,50 @@
   font-size: 11px;
 }
 
-/* --- spec-012: sub-node connectors -- visually distinct (accent color,
-   diamond marker) from normal left/right data ports. A root's own slots
-   sit on ITS bottom edge; a sub-node's single "plug me in" connector sits
-   on ITS OWN top edge -- children render below their root and connect
-   upward into it, matching n8n's own sub-node convention. --- */
+/* --- spec-013 §7: inline error tooltip -- hidden until the node itself
+   is hovered, shown above the node so it never covers the ports below. --- */
+
+.generic-node__error-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  max-width: 260px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--status-error) 45%, transparent);
+  background: var(--color-surface-raised);
+  color: var(--status-error);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms var(--ease-standard), transform 150ms var(--ease-standard);
+  z-index: 10;
+}
+
+.generic-node:hover .generic-node__error-tooltip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* --- spec-012/013: sub-node connectors. A root's own slots sit on ITS
+   bottom edge as small labeled circles (matching the n8n reference
+   screenshot directly, replacing spec-012's diamond markers); a sub-node's
+   own single "plug me in" connector sits on ITS top edge -- children
+   render below their root and connect upward, matching n8n's convention. --- */
 
 .generic-node__port--sub-node-in {
-  bottom: -4px;
+  bottom: -20px;
   transform: translateX(-50%);
   flex-direction: column-reverse;
   align-items: center;
 }
 
 .generic-node__port--sub-node-in .generic-node__slot-label {
-  margin: 0 0 2px;
+  margin: 2px 0 0;
+  font-size: 9px;
 }
 
 .generic-node__port--sub-node-out {
@@ -274,11 +534,90 @@
 
 .generic-node__port--sub-node-in .react-flow__handle,
 .generic-node__port--sub-node-out .react-flow__handle {
-  background: var(--accent);
-  border-radius: 2px;
-  transform: rotate(45deg);
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--color-surface);
+  border: 2px solid var(--cat-ai);
+}
+
+/* --- spec-013: compact sub-node card (model, memory, trigger adapters --
+   anything with a sub_node_role). These never carry connectable data ports
+   in this canvas (see GenericNode.tsx's docstring), so they get a much
+   smaller, centered card -- title + one combined meta line -- instead of
+   the full root anatomy's icon-chip header row and port list. --- */
+
+.generic-node--subnode {
+  min-width: 130px;
+  width: 130px;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+  text-align: center;
+}
+
+.generic-node--subnode .generic-node__title {
+  font-size: 11px;
+  white-space: normal;
+}
+
+.generic-node--subnode .generic-node__subtitle {
+  font-size: 9.5px;
+  white-space: normal;
+  margin-top: 2px;
+}
+
+.generic-node__subnode-pin.react-flow__handle {
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 10px;
+  height: 10px;
+  background: var(--color-surface);
+  border: 2px solid var(--cat-ai);
+}
+
+/* --- spec-013: edges. A `sub_node` edge is always dashed/violet/thicker,
+   regardless of run state -- it's structural wiring, not per-run data flow
+   (see StatusEdge.tsx). A `data` edge's color/animation is driven entirely
+   by its *target* node's real current status from the same run-polling
+   data GenericNode's own pulse animation uses -- never a decorative
+   canned loop. --- */
+
+.edge-data {
+  stroke-width: 1.5;
+  transition: stroke 200ms var(--ease-standard);
+}
+
+.edge-data--pending {
+  stroke: var(--color-border-strong);
+}
+
+.edge-data--running {
+  stroke: var(--status-running);
+  stroke-width: 2;
+  stroke-dasharray: 6 6;
+  animation: edge-flow 0.6s var(--ease-flow) infinite;
+}
+
+@keyframes edge-flow {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+
+.edge-data--success {
+  stroke: var(--status-success);
+}
+
+.edge-data--error {
+  stroke: var(--status-error);
+}
+
+.edge-sub-node {
+  stroke: var(--cat-ai);
+  stroke-width: 2.5;
+  stroke-dasharray: 3 5;
+  stroke-linecap: round;
 }
 
 /* --- node inspector (config + trace tabs) --- */
@@ -286,12 +625,12 @@
 .node-inspector {
   overflow-y: auto;
   padding: 12px;
-  background: var(--panel-bg);
-  border-left: 1px solid var(--border);
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-border);
 }
 
 .node-inspector--empty {
-  color: var(--text);
+  color: var(--color-text);
   opacity: 0.6;
   font-size: 13px;
 }
@@ -300,7 +639,7 @@
   display: flex;
   gap: 4px;
   margin-bottom: 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .node-inspector__tab {
@@ -308,16 +647,19 @@
   padding: 6px 12px;
   border: none;
   background: none;
-  color: var(--text);
+  color: var(--color-text);
   opacity: 0.6;
   cursor: pointer;
   border-bottom: 2px solid transparent;
+  transition:
+    opacity 150ms var(--ease-standard),
+    border-color 150ms var(--ease-standard);
 }
 
 .node-inspector__tab.active {
   opacity: 1;
   font-weight: 600;
-  border-bottom-color: var(--accent);
+  border-bottom-color: var(--color-accent);
 }
 
 .node-inspector__tab:disabled {
@@ -326,7 +668,7 @@
 }
 
 .config-panel__id {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 11px;
   opacity: 0.6;
   margin-bottom: 12px;
@@ -345,24 +687,55 @@
 }
 
 .config-panel__field input[type="text"],
-.config-panel__field input[type="number"] {
+.config-panel__field input[type="number"],
+.config-panel__field select {
   font: inherit;
-  padding: 4px 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--text);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  color: var(--color-text);
+  transition: border-color 150ms var(--ease-standard), box-shadow 150ms var(--ease-standard);
+}
+
+.config-panel__field input[type="text"]:hover,
+.config-panel__field input[type="number"]:hover,
+.config-panel__field select:hover {
+  border-color: var(--color-border-strong);
+}
+
+.config-panel__field input[type="text"]:focus,
+.config-panel__field input[type="number"]:focus,
+.config-panel__field select:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 25%, transparent);
+}
+
+.config-panel__field input::placeholder {
+  color: var(--color-text-muted);
 }
 
 .config-panel__json-field {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 12px;
   min-height: 80px;
-  padding: 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--text);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  color: var(--color-text);
+  transition: border-color 150ms var(--ease-standard), box-shadow 150ms var(--ease-standard);
+}
+
+.config-panel__json-field:hover {
+  border-color: var(--color-border-strong);
+}
+
+.config-panel__json-field:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 25%, transparent);
 }
 
 .config-panel__error {
@@ -371,19 +744,137 @@
   margin-bottom: 8px;
 }
 
-.config-panel button {
+/* --- spec-013: shared button hierarchy. `.btn--primary` (solid accent
+   fill) for the one confirming action in a form; `.btn--secondary`
+   (outlined/ghost) for auxiliary actions -- replaces the old ambient
+   `.config-panel button` rule, which unintentionally painted every button
+   (Save, +New connection, Test Connection) with the same solid-accent
+   fill regardless of its own more specific class, since `.config-panel
+   button`'s type+class selector outranked single-class rules like
+   `.connection-picker__new-btn` in specificity. --- */
+
+.btn {
   font: inherit;
-  padding: 6px 14px;
-  border-radius: 4px;
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: white;
+  font-size: 12.5px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: filter 150ms var(--ease-standard), border-color 150ms var(--ease-standard);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.btn--primary {
+  border: 1px solid var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-canvas);
+}
+
+.btn--primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.btn--secondary {
+  border: 1px solid var(--color-border);
+  background: var(--color-canvas);
+  color: var(--color-text);
+}
+
+.btn--secondary:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-raised);
+}
+
+/* --- spec-013: reskinned <select> -- native arrow removed, a themed
+   lucide chevron rendered instead so its color comes from the same token
+   system as everything else (a CSS-only background-image arrow can't pull
+   from a CSS custom property inside its encoded SVG). --- */
+
+.select-wrap {
+  position: relative;
+  display: inline-flex;
+  flex: 1;
+}
+
+.select-wrap select {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  padding-right: 32px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-wrap__chevron {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+/* --- spec-013: sliding toggle switch (Toggle.tsx) replacing the native
+   checkbox for boolean config fields. The real checkbox stays in the DOM,
+   visually hidden but still focusable/keyboard-operable -- native
+   semantics kept "for free," only the visual layer is custom. --- */
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
   cursor: pointer;
 }
 
-.config-panel button:disabled {
-  opacity: 0.6;
-  cursor: default;
+.toggle__input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.toggle__track {
+  width: 34px;
+  height: 20px;
+  border-radius: var(--radius-pill);
+  background: var(--color-border-strong);
+  position: relative;
+  transition: background 150ms var(--ease-standard);
+  flex-shrink: 0;
+}
+
+.toggle__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-text);
+  transition: transform 250ms var(--ease-spring);
+  display: block;
+}
+
+.toggle__input:checked + .toggle__track {
+  background: var(--color-accent);
+}
+
+.toggle__input:checked + .toggle__track .toggle__thumb {
+  transform: translateX(14px);
+}
+
+.toggle__input:focus-visible + .toggle__track {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
 }
 
 /* --- spec-012: read-only connected-sub-node summaries --- */
@@ -391,7 +882,7 @@
 .config-panel__sub-nodes {
   margin-top: 16px;
   padding-top: 12px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--color-border);
 }
 
 .config-panel__sub-nodes-heading {
@@ -408,12 +899,12 @@
 }
 
 .config-panel__sub-node-summary {
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--cat-ai);
+  border-radius: var(--radius-sm);
   padding: 6px 10px;
   margin-bottom: 8px;
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  background: color-mix(in srgb, var(--cat-ai) 6%, transparent);
 }
 
 .config-panel__sub-node-summary-header {
@@ -464,26 +955,27 @@
   gap: 6px;
 }
 
-.connection-picker__row select {
-  flex: 1;
+.connection-picker__row select,
+.connection-picker__form select {
   font: inherit;
-  padding: 4px 6px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--text);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-canvas);
+  color: var(--color-text);
+  transition: border-color 150ms var(--ease-standard), box-shadow 150ms var(--ease-standard);
 }
 
-.connection-picker__new-btn {
-  font: inherit;
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  background: var(--bg);
-  color: var(--text);
-  cursor: pointer;
-  white-space: nowrap;
+.connection-picker__row select:hover,
+.connection-picker__form select:hover {
+  border-color: var(--color-border-strong);
+}
+
+.connection-picker__row select:focus,
+.connection-picker__form select:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 25%, transparent);
 }
 
 .connection-picker__form {
@@ -491,15 +983,15 @@
   flex-direction: column;
   gap: 8px;
   padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-canvas);
 }
 
 .connection-picker__tabs {
   display: flex;
   gap: 4px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .connection-picker__tab {
@@ -508,7 +1000,7 @@
   padding: 4px 10px;
   border: none;
   background: none;
-  color: var(--text);
+  color: var(--color-text);
   opacity: 0.6;
   cursor: pointer;
   border-bottom: 2px solid transparent;
@@ -517,13 +1009,13 @@
 .connection-picker__tab.active {
   opacity: 1;
   font-weight: 600;
-  border-bottom-color: var(--accent);
+  border-bottom-color: var(--color-accent);
 }
 
 .connection-picker__test-result {
   font-size: 12px;
   padding: 6px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .connection-picker__test-result.success {
@@ -562,7 +1054,7 @@
 
 .trace-inspector__meta dd {
   margin: 0;
-  font-family: var(--mono);
+  font-family: var(--font-mono);
 }
 
 .trace-inspector__status-success {
@@ -584,11 +1076,11 @@
 }
 
 .trace-inspector__json {
-  font-family: var(--mono);
+  font-family: var(--font-mono);
   font-size: 11px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  background: var(--color-canvas);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
   padding: 8px;
   overflow-x: auto;
   white-space: pre-wrap;

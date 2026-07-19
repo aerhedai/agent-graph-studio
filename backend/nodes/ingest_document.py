@@ -80,6 +80,7 @@ def _resolve_embed(ctx: ExecutionContext, embedding_model_connection: str, model
     inputs=[InputSlotSpec("text", TEXT)],
     outputs=[OutputSlotSpec("chunks_stored", TEXT)],
     config_model=IngestDocumentConfig,
+    category="ai",
 )
 def execute_ingest_document(ctx: ExecutionContext) -> NodeResult:
     config = IngestDocumentConfig.model_validate(ctx.node.config)

@@ -34,6 +34,7 @@ class GenericAdapterConfig(BaseModel):
     inputs=[InputSlotSpec("payload", TEXT)],
     outputs=[OutputSlotSpec("payload", TEXT)],
     config_model=GenericAdapterConfig,
+    category="triggers",
     sub_node_role="trigger_adapter",
 )
 def execute_generic_adapter(ctx: ExecutionContext) -> NodeResult:
