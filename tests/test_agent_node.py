@@ -105,15 +105,25 @@ def _ctx(
     model_node: NodeSpec | None = None,
     memory_node: NodeSpec | None = None,
     omit_connection_profile: bool = False,
+    include_tool_group: bool = True,
 ) -> ExecutionContext:
     model_node = model_node if model_node is not None else _model_node()
+    # spec-014: agent.tools resolves to zero or one `tool_group` sub-node
+    # (cardinality="zero_or_one"), not tool nodes directly -- mirrors the
+    # real shape every production graph now uses. include_tool_group=False
+    # exercises the "agent has no tools at all" case directly (no "tools"
+    # sub_nodes entry whatsoever, not merely an empty tool_group).
     all_nodes = [model_node, *tool_nodes]
     sub_nodes: dict[tuple[str, str], list[str]] = {(node.id, "model"): [model_node.id]}
+    if include_tool_group:
+        tool_group_node = NodeSpec(id="tool_group_1", type="tool_group", config={})
+        all_nodes.append(tool_group_node)
+        sub_nodes[(node.id, "tools")] = [tool_group_node.id]
+        if tool_nodes:
+            sub_nodes[(tool_group_node.id, "tools")] = [n.id for n in tool_nodes]
     if memory_node is not None:
         all_nodes.append(memory_node)
         sub_nodes[(node.id, "memory")] = [memory_node.id]
-    if tool_nodes:
-        sub_nodes[(node.id, "tools")] = [n.id for n in tool_nodes]
 
     connection_profiles = {}
     if not omit_connection_profile:
@@ -190,6 +200,23 @@ def test_agent_direct_answer_no_tool_call():
     result = execute_agent(ctx)
 
     assert result.outputs == {"answer": "Paris"}
+    assert result.child_traces is None
+
+
+def test_agent_runs_with_no_tool_group_connected_at_all():
+    # tools is now cardinality="zero_or_one" (relaxed from "one") -- an
+    # agent with no tool_group sub-node connected at all (not even an
+    # empty one) must still run fine, simply with no tools available to
+    # the model.
+    global _current_impl
+    _current_impl = lambda config, **kwargs: ToolCallResponse(text="4", tool_calls=[])
+
+    node = _agent_node()
+    ctx = _ctx(node, "What is 2 plus 2?", [], include_tool_group=False)
+
+    result = execute_agent(ctx)
+
+    assert result.outputs == {"answer": "4"}
     assert result.child_traces is None
 
 

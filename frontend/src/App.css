@@ -472,6 +472,23 @@
   border: 1px solid var(--color-canvas);
 }
 
+/* spec-014: an optional data port (InputSlotSpec.required=False, honored
+   by the execution engine's scheduler since this same spec) gets a
+   visually distinct dashed/hollow ring instead of the solid dot every
+   required port uses -- "you can leave this unwired" at a glance, no
+   hover/inspection needed. */
+.generic-node__port--optional .react-flow__handle {
+  background-color: transparent;
+  border: 1px dashed var(--color-border-strong);
+}
+
+.generic-node__slot-optional-tag {
+  font-size: 9px;
+  font-style: italic;
+  opacity: 0.6;
+  margin-left: 3px;
+}
+
 .generic-node__hint {
   padding: 6px 10px;
   font-style: italic;
@@ -525,6 +542,16 @@
   font-size: 9px;
 }
 
+/* spec-014: a `cardinality="one"` sub-node slot (currently only agent's
+   `model`) is the sub-node-slot equivalent of a required data port --
+   same red-asterisk treatment, so "this must be wired" reads consistently
+   regardless of which port kind it's next to. */
+.generic-node__slot-required-asterisk {
+  color: var(--status-error);
+  margin-left: 2px;
+  font-weight: 700;
+}
+
 .generic-node__port--sub-node-out {
   position: absolute;
   top: -4px;
@@ -574,6 +601,104 @@
   height: 10px;
   background: var(--color-surface);
   border: 2px solid var(--cat-ai);
+}
+
+/* --- spec-014: the `tool_group` hybrid card. Collapsed, it's barely
+   bigger than a compact sub-node card -- icon chip + tool count + a
+   chevron to expand. Expanded, it grows a stacked list of compact rows,
+   one per currently-contained tool, each independently removable -- still
+   noticeably smaller than each tool's own original free-floating card,
+   per spec-014's "all visible, but smaller" requirement. Uses the same
+   accent-token anatomy (--node-accent) as every other node so it reads as
+   part of the same family, not a bolted-on widget. --- */
+
+.generic-node--group {
+  min-width: 150px;
+  width: 150px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.generic-node--group-collapsed {
+  width: 130px;
+  min-width: 130px;
+}
+
+.generic-node__group-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2);
+  cursor: pointer;
+  user-select: none;
+}
+
+.generic-node__group-toggle {
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.generic-node__group-contents {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0 var(--space-2) var(--space-2);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-2);
+}
+
+.generic-node__group-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--node-accent) 10%, var(--color-surface-raised));
+  cursor: pointer;
+  transition: background 120ms var(--ease-standard);
+}
+
+.generic-node__group-row:hover {
+  background: color-mix(in srgb, var(--node-accent) 20%, var(--color-surface-raised));
+}
+
+.generic-node__group-row-icon {
+  display: flex;
+  align-items: center;
+  color: var(--node-accent);
+  flex-shrink: 0;
+}
+
+.generic-node__group-row-label {
+  flex: 1;
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.generic-node__group-row-remove {
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  transition: color 120ms var(--ease-standard), background 120ms var(--ease-standard);
+}
+
+.generic-node__group-row-remove:hover {
+  color: var(--status-error);
+  background: color-mix(in srgb, var(--status-error) 15%, transparent);
 }
 
 /* --- spec-013: edges. A `sub_node` edge is always dashed/violet/thicker,
@@ -684,6 +809,19 @@
 .config-panel__field label {
   font-size: 12px;
   font-weight: 600;
+}
+
+/* spec-014: a config field absent from its schema's own `required` array
+   gets the same muted "optional" tag treatment as an optional data port
+   (.generic-node__slot-optional-tag) -- one visual language for
+   "you don't have to fill this in," reused across ports and form fields. */
+.config-panel__optional-tag {
+  font-size: 10px;
+  font-weight: 400;
+  font-style: italic;
+  opacity: 0.6;
+  margin-left: 4px;
+  text-transform: none;
 }
 
 .config-panel__field input[type="text"],

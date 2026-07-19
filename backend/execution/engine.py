@@ -133,18 +133,29 @@ async def _run_graph_async(
     finished: set[str] = set()
 
     def gather_inputs(node_id: str) -> tuple[str, dict[str, Any] | None]:
+        # An optional slot (InputSlotSpec.required=False) never blocks or
+        # waits on this node's readiness -- with no resolvable value (no
+        # edge at all, or its upstream finished without producing that
+        # output) it's simply omitted from `gathered`, and the node's own
+        # execute() is expected to read it via ctx.inputs.get(...)/`in`
+        # rather than direct subscript. Required-slot semantics (block/wait)
+        # are completely unchanged.
         node = nodes_by_id[node_id]
         definition = registry.get(node.type)
         gathered: dict[str, Any] = {}
         for slot in effective_inputs(definition, node) or []:
             edge = incoming_by_slot.get((node_id, slot.name))
             if edge is None:
-                return "blocked", None
+                if slot.required:
+                    return "blocked", None
+                continue
             key = (edge.from_.node, edge.from_.slot)
             if key in available:
                 gathered[slot.name] = available[key]
             elif edge.from_.node in finished:
-                return "blocked", None
+                if slot.required:
+                    return "blocked", None
+                continue
             else:
                 return "waiting", None
         return "ready", gathered

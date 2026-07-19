@@ -24,7 +24,7 @@ class ModelConfig(BaseModel):
     connection: str
     model: str
     system_prompt: str = ""
-    max_tokens: int = Field(gt=0)
+    max_tokens: int = Field(gt=0, default=1024)
 
 
 @register_node(

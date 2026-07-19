@@ -1,6 +1,18 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
-import { Box, Database, Plug, Sparkles, Waypoints, Zap, type LucideIcon } from "lucide-react";
-import { createContext, useContext, type CSSProperties } from "react";
+import {
+  Box,
+  ChevronDown,
+  ChevronRight,
+  Database,
+  Plug,
+  Sparkles,
+  Waypoints,
+  Wrench,
+  X,
+  Zap,
+  type LucideIcon,
+} from "lucide-react";
+import { createContext, useContext, useState, type CSSProperties } from "react";
 import type { JsonSchema, SlotInfo, SubNodeSlotInfo } from "../api/types";
 
 // One generic component for every node type -- ports are rendered from
@@ -9,17 +21,17 @@ import type { JsonSchema, SlotInfo, SubNodeSlotInfo } from "../api/types";
 // of the pluggability bar the backend registry holds (spec-005 §3).
 export type NodeStatus = "pending" | "running" | "success" | "error";
 
-// spec-012: the reserved handle id for a node's single "usable as a
-// sub-node" connector. Every node renders this handle unconditionally
-// (any node type can fill a `tools`-shaped slot, whose accepts_role is
-// None -- "any node type accepted"); role/cardinality compatibility is
-// enforced at connection time (Canvas.tsx's isValidConnection) and at
-// graph-validation time (check_sub_node_edges), not by hiding the handle
-// for types that wouldn't fit every slot. It plugs upward into whichever
-// root it's wired to (n8n's own sub-node convention: children sit below
-// their root, connecting into its bottom edge) -- so this handle sits on
-// this node's own TOP edge, while a root's own per-slot handles
-// (rendered below) sit on ITS bottom edge.
+// spec-012/spec-014: the reserved handle id for a node's single "usable as
+// a sub-node" connector. Originally rendered unconditionally on every node
+// type (any node could be dragged into a `tools`-shaped slot); spec-014
+// removed it from ordinary nodes -- it now renders only on sub-node-role
+// types (model/memory/trigger adapters, and the `tool_group` hybrid
+// below), since tool-wiring goes through a `tool_group` container instead
+// of a bare per-node connector. It plugs upward into whichever root it's
+// wired to (n8n's own sub-node convention: children sit below their root,
+// connecting into its bottom edge) -- so this handle sits on this node's
+// own TOP edge, while a root's own per-slot handles (rendered below) sit
+// on ITS bottom edge.
 export const SUB_NODE_HANDLE_ID = "__sub_node__";
 
 export type GenericNodeData = {
@@ -35,6 +47,11 @@ export type GenericNodeData = {
   subNodeSlots?: Record<string, SubNodeSlotInfo> | null;
   subNodeRole?: string | null;
   resolveSlotsFromSubNode?: string | null;
+  // spec-014: populated by Canvas.tsx's containment tracking for a
+  // `tool_group` (or any future hybrid) node only -- the real, full-state
+  // nodes currently contained by this group, for the compact row list.
+  // Undefined/empty for every non-group node type.
+  containedNodes?: { id: string; nodeType: string; category: string }[];
 };
 
 export type GenericFlowNode = Node<GenericNodeData, "generic">;
@@ -46,6 +63,16 @@ export type GenericFlowNode = Node<GenericNodeData, "generic">;
 // used for nodeTypesByName. Defaults to {} so GenericNode never needs a
 // null-check at every call site.
 export const ConnectionTypeContext = createContext<Record<string, string>>({});
+
+// spec-014: group-card interactions (selecting a contained node so its
+// config still opens in the side panel, and removing it back out to a
+// free-floating canvas node) live in Canvas.tsx, which owns node/edge
+// state -- GenericNode only needs to call back into it. Defaults to no-ops
+// so GenericNode never needs a null-check at every call site.
+export const GroupActionsContext = createContext<{
+  selectNode: (id: string) => void;
+  removeFromGroup: (nodeId: string) => void;
+}>({ selectNode: () => {}, removeFromGroup: () => {} });
 
 // Presentation-only category -> {icon, css-token} map. This is distinct
 // from the "palette derives its section list from the registry's category
@@ -59,6 +86,7 @@ export const CATEGORY_PRESENTATION: Record<string, { icon: LucideIcon; colorVar:
   ai: { icon: Sparkles, colorVar: "--cat-ai", label: "AI" },
   data: { icon: Database, colorVar: "--cat-data", label: "Data" },
   connectivity: { icon: Plug, colorVar: "--cat-connectivity", label: "Connectivity" },
+  tools: { icon: Wrench, colorVar: "--cat-tools", label: "Tools" },
 };
 
 export function categoryPresentation(category: string) {
@@ -147,9 +175,98 @@ const PORT_ROW_HEIGHT = 22;
 const SUB_NODE_ROW_HEIGHT = 20;
 
 export function GenericNode({ data, selected }: NodeProps<GenericFlowNode>) {
-  const { nodeType, category, config, inputs, outputs, dynamicSchema, status, subNodeSlots, subNodeRole, errorMessage } =
-    data;
+  const {
+    nodeType,
+    category,
+    config,
+    inputs,
+    outputs,
+    dynamicSchema,
+    status,
+    subNodeSlots,
+    subNodeRole,
+    errorMessage,
+    containedNodes,
+  } = data;
   const connectionTypeByName = useContext(ConnectionTypeContext);
+  const groupActions = useContext(GroupActionsContext);
+  // spec-014: collapsed by default -- a freshly dropped group starts as
+  // just an icon + connector until its first tool is dropped onto it.
+  // Canvas/presentation-only state, deliberately not persisted (spec-014
+  // §4, same treatment as `status`).
+  const [collapsed, setCollapsed] = useState(true);
+
+  // spec-014: `tool_group` (and any future container type built the same
+  // way) is a "hybrid" node -- simultaneously a root (declares its own
+  // sub_node_slots) AND a sub-node (declares its own subNodeRole). Detected
+  // generically from those two already-known facts, never a hardcoded
+  // `nodeType === "tool_group"` check, so any future hybrid type gets the
+  // same collapsible-group treatment automatically.
+  const isHybridGroup = Boolean(subNodeRole) && Boolean(subNodeSlots && Object.keys(subNodeSlots).length > 0);
+
+  if (isHybridGroup) {
+    const { icon: CategoryIcon, colorVar } = categoryPresentation(category);
+    const contents = containedNodes ?? [];
+    return (
+      <div
+        className={`generic-node generic-node--group${collapsed ? " generic-node--group-collapsed" : ""} status-${status ?? "pending"}${selected ? " selected" : ""}`}
+        style={{ "--node-accent": `var(${colorVar})` } as CSSProperties}
+      >
+        <Handle id={SUB_NODE_HANDLE_ID} type="source" position={Position.Top} className="generic-node__subnode-pin" />
+        <div className="generic-node__group-header" onClick={() => setCollapsed((c) => !c)}>
+          <div className="generic-node__icon-chip">
+            <CategoryIcon />
+          </div>
+          <div className="generic-node__titles">
+            <div className="generic-node__title">{nodeType}</div>
+            <div className="generic-node__subtitle">
+              {contents.length} tool{contents.length === 1 ? "" : "s"}
+            </div>
+          </div>
+          <button type="button" className="generic-node__group-toggle" aria-label={collapsed ? "Expand" : "Collapse"}>
+            {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+          </button>
+        </div>
+        {!collapsed && (
+          <div className="generic-node__group-contents">
+            {contents.length === 0 && (
+              <div className="generic-node__hint">drop a node here to add it as a tool</div>
+            )}
+            {contents.map((n) => {
+              const { icon: RowIcon, colorVar: rowColorVar } = categoryPresentation(n.category);
+              return (
+                <div
+                  key={n.id}
+                  className="generic-node__group-row"
+                  style={{ "--node-accent": `var(${rowColorVar})` } as CSSProperties}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    groupActions.selectNode(n.id);
+                  }}
+                >
+                  <span className="generic-node__group-row-icon">
+                    <RowIcon size={14} />
+                  </span>
+                  <span className="generic-node__group-row-label">{n.nodeType}</span>
+                  <button
+                    type="button"
+                    className="generic-node__group-row-remove"
+                    aria-label={`Remove ${n.nodeType} from group`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      groupActions.removeFromGroup(n.id);
+                    }}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   // Sub-node-role types (model, memory, the trigger adapters) are never
   // wired via ordinary data edges in this canvas -- a sub_node edge only
@@ -225,26 +342,37 @@ export function GenericNode({ data, selected }: NodeProps<GenericFlowNode>) {
             data ports, and from a sub-node's own connector (top edge,
             below). One target handle per slot, id = the slot name itself,
             which is exactly what a sub_node edge's own top-level `slot`
-            field records. */}
-        {subNodeSlotNames.map((slotName, i) => (
-          <div
-            key={`sub-in-${slotName}`}
-            className="generic-node__port generic-node__port--sub-node-in"
-            style={{ left: slotLeft(i, subNodeSlotNames.length) }}
-          >
-            <Handle id={slotName} type="target" position={Position.Bottom} />
-            <span className="generic-node__slot-label">{slotName}</span>
-          </div>
-        ))}
+            field records. spec-014: a `cardinality="one"` slot (currently
+            only agent's `model`) gets a red required-asterisk next to its
+            label, mirroring the same treatment data ports get below. */}
+        {subNodeSlotNames.map((slotName, i) => {
+          const isRequiredSlot = subNodeSlots?.[slotName]?.cardinality === "one";
+          return (
+            <div
+              key={`sub-in-${slotName}`}
+              className="generic-node__port generic-node__port--sub-node-in"
+              style={{ left: slotLeft(i, subNodeSlotNames.length) }}
+            >
+              <Handle id={slotName} type="target" position={Position.Bottom} />
+              <span className="generic-node__slot-label">
+                {slotName}
+                {isRequiredSlot && <span className="generic-node__slot-required-asterisk">*</span>}
+              </span>
+            </div>
+          );
+        })}
 
         {inputs.map((slot, i) => (
           <div
             key={`in-${slot.name}`}
-            className="generic-node__port generic-node__port--in"
+            className={`generic-node__port generic-node__port--in${slot.required ? "" : " generic-node__port--optional"}`}
             style={{ top: slotTop(i, inputs.length) }}
           >
             <Handle id={slot.name} type="target" position={Position.Left} />
-            <span className="generic-node__slot-label">{slot.name}</span>
+            <span className="generic-node__slot-label">
+              {slot.name}
+              {!slot.required && <span className="generic-node__slot-optional-tag">optional</span>}
+            </span>
           </div>
         ))}
 
@@ -262,16 +390,6 @@ export function GenericNode({ data, selected }: NodeProps<GenericFlowNode>) {
         {dynamicSchema && inputs.length === 0 && outputs.length === 0 && subNodeSlotNames.length === 0 && (
           <div className="generic-node__hint">configure to resolve ports</div>
         )}
-
-        {/* spec-012: every node's single "plug me into a sub-node slot"
-            connector -- top edge, same accent styling as the slot handles
-            above, source-typed since a sub-node edge always flows from
-            the sub-node into a root's named slot (which now sits on the
-            root's bottom edge, directly below where this node would be
-            positioned on canvas -- n8n's own child-below-root convention). */}
-        <div className="generic-node__port generic-node__port--sub-node-out">
-          <Handle id={SUB_NODE_HANDLE_ID} type="source" position={Position.Top} />
-        </div>
       </div>
     </div>
   );

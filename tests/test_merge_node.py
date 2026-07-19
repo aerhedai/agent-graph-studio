@@ -20,8 +20,19 @@ def test_resolve_merge_slots_produces_n_inputs():
 
 
 def test_resolve_merge_slots_returns_none_on_malformed_config():
-    node = NodeSpec(id="n1", type="merge", config={})
+    # expected_input_count now has a default (2), so an *empty* config is
+    # valid -- a genuinely malformed value (fails Field(gt=0)) is what
+    # should still return None here.
+    node = NodeSpec(id="n1", type="merge", config={"expected_input_count": -1})
     assert _resolve_merge_slots(node) is None
+
+
+def test_resolve_merge_slots_uses_default_expected_input_count_when_omitted():
+    node = NodeSpec(id="n1", type="merge", config={})
+    resolved = _resolve_merge_slots(node)
+    assert resolved is not None
+    inputs, _ = resolved
+    assert [s.name for s in inputs] == ["input_1", "input_2"]
 
 
 def test_execute_merge_combines_in_index_order():

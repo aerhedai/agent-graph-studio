@@ -23,15 +23,17 @@ def _node(function_source: str) -> NodeSpec:
 
 
 def test_parse_function_valid():
-    name, params = _parse_function("def transform(text, prefix):\n    return prefix + text\n")
+    name, params, optional = _parse_function("def transform(text, prefix):\n    return prefix + text\n")
     assert name == "transform"
     assert params == ["text", "prefix"]
+    assert optional == set()
 
 
 def test_parse_function_zero_params():
-    name, params = _parse_function("def greet():\n    return 'hi'\n")
+    name, params, optional = _parse_function("def greet():\n    return 'hi'\n")
     assert name == "greet"
     assert params == []
+    assert optional == set()
 
 
 def test_parse_function_syntax_error():
@@ -59,9 +61,20 @@ def test_parse_function_rejects_kwargs():
         _parse_function("def f(**kwargs):\n    return ''\n")
 
 
-def test_parse_function_rejects_defaults():
-    with pytest.raises(CodeSourceError):
-        _parse_function("def f(text='x'):\n    return text\n")
+def test_parse_function_allows_default_valued_params_as_optional():
+    # A default-valued parameter is no longer rejected -- it becomes an
+    # optional input slot instead (the engine now honors
+    # InputSlotSpec.required=False, see backend/execution/engine.py).
+    name, params, optional = _parse_function("def f(text, suffix='!'):\n    return text + suffix\n")
+    assert name == "f"
+    assert params == ["text", "suffix"]
+    assert optional == {"suffix"}
+
+
+def test_parse_function_allows_default_valued_kwonly_param_as_optional():
+    name, params, optional = _parse_function("def f(text, *, suffix='!'):\n    return text + suffix\n")
+    assert params == ["text", "suffix"]
+    assert optional == {"suffix"}
 
 
 def test_parse_function_rejects_decorators():
@@ -114,6 +127,16 @@ def test_resolve_code_slots_returns_none_when_config_missing_source():
     assert _resolve_code_slots(node) is None
 
 
+def test_resolve_code_slots_marks_default_valued_param_optional():
+    node = _node("def transform(text, suffix='!'):\n    return text + suffix\n")
+    resolved = _resolve_code_slots(node)
+    assert resolved is not None
+    inputs, _ = resolved
+    by_name = {s.name: s for s in inputs}
+    assert by_name["text"].required is True
+    assert by_name["suffix"].required is False
+
+
 # --- execute_code ----------------------------------------------------------
 
 
@@ -140,3 +163,24 @@ def test_execute_code_rejects_non_string_return():
 
     with pytest.raises(NodeExecutionError):
         execute_code(ctx)
+
+
+def test_execute_code_uses_python_default_when_optional_input_omitted():
+    # ctx.inputs has no "suffix" key at all -- as if the engine left an
+    # unwired optional slot out of gathered_inputs (backend/execution/
+    # engine.py's gather_inputs). Python's own default should fire.
+    node = _node("def transform(text, suffix='!'):\n    return text + suffix\n")
+    ctx = ExecutionContext(node=node, inputs={"text": "hello"})
+
+    result = execute_code(ctx)
+
+    assert result.outputs == {"result": "hello!"}
+
+
+def test_execute_code_uses_wired_value_when_optional_input_provided():
+    node = _node("def transform(text, suffix='!'):\n    return text + suffix\n")
+    ctx = ExecutionContext(node=node, inputs={"text": "hello", "suffix": "?"})
+
+    result = execute_code(ctx)
+
+    assert result.outputs == {"result": "hello?"}

@@ -24,7 +24,7 @@ from backend.validation.validator import validate_graph
 
 class LoopConfig(BaseModel):
     sub_graph: GraphSpec
-    max_iterations: int = Field(gt=0)
+    max_iterations: int = Field(gt=0, default=10)
     stop_condition_slot: str | None = None
 
 

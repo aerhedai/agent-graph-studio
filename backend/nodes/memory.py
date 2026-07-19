@@ -23,7 +23,7 @@ from backend.registry.decorators import register_node
 
 class MemoryConfig(BaseModel):
     type: Literal["window"] = "window"
-    max_messages: int = Field(gt=0)
+    max_messages: int = Field(gt=0, default=20)
 
 
 @register_node(

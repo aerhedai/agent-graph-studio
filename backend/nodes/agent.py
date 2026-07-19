@@ -40,7 +40,7 @@ from backend.schema.types import TEXT
 
 
 class AgentConfig(BaseModel):
-    max_iterations: int = Field(gt=0)
+    max_iterations: int = Field(gt=0, default=10)
 
 
 def _utcnow_iso() -> str:
@@ -142,7 +142,7 @@ def _run_tool(
     sub_node_slots={
         "model": SubNodeSlotSpec(cardinality="one", accepts_role="model"),
         "memory": SubNodeSlotSpec(cardinality="zero_or_one", accepts_role="memory"),
-        "tools": SubNodeSlotSpec(cardinality="many", accepts_role=None),
+        "tools": SubNodeSlotSpec(cardinality="zero_or_one", accepts_role="tool_group"),
     },
 )
 def execute_agent(ctx: ExecutionContext) -> NodeResult:
@@ -166,7 +166,23 @@ def execute_agent(ctx: ExecutionContext) -> NodeResult:
     memory_ids = sub_nodes.get((ctx.node.id, "memory"), [])
     memory_config = MemoryConfig.model_validate(nodes_by_id[memory_ids[0]].config) if memory_ids else None
 
-    tool_ids = sub_nodes.get((ctx.node.id, "tools"), [])
+    # spec-014 (relaxed): agent.tools resolves to zero or one `tool_group`,
+    # not tool nodes directly -- an agent with no tools connected simply
+    # reasons over model+memory alone, tool_definitions ends up empty. One
+    # added level of indirection through the exact same `sub_nodes`
+    # resource (keyed by (root_id, slot) for every sub_node edge in the
+    # graph, not just top-level roots), so reading through the group needs
+    # no engine changes, just one more lookup.
+    tool_group_ids = sub_nodes.get((ctx.node.id, "tools"), [])
+    if len(tool_group_ids) > 1:
+        # Defensive only -- validate_graph()'s check_sub_node_edges already
+        # guarantees at most one connected 'tool_group' sub-node before a
+        # run ever starts, same precedent as model_ids above.
+        raise NodeExecutionError(
+            f"agent '{ctx.node.id}' has {len(tool_group_ids)} connected 'tool_group' "
+            "sub-nodes, expected at most 1"
+        )
+    tool_ids = sub_nodes.get((tool_group_ids[0], "tools"), []) if tool_group_ids else []
 
     profile = ctx.resources.get("connection_profiles", {}).get(model_config.connection)
     if profile is None:

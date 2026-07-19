@@ -71,3 +71,23 @@ def test_all_four_mvp_types_registered():
 
     for type_name in ("text_input", "llm_call", "conditional_branch", "text_output"):
         assert default_registry.get(type_name) is not None, f"{type_name} not registered"
+
+
+def test_tool_group_is_both_root_and_sub_node():
+    """spec-014: `tool_group` is the first hybrid node type -- it declares its
+    own `sub_node_slots` (a root/cluster node, like `agent`) AND its own
+    `sub_node_role` (a sub-node, like `model`), simultaneously. Nothing in
+    `NodeDefinition` needed to change to support this; both fields are
+    already independent and optional."""
+    import backend.nodes  # noqa: F401
+    from backend.registry.base import default_registry
+
+    definition = default_registry.get("tool_group")
+    assert definition is not None
+
+    assert definition.sub_node_slots is not None
+    assert "tools" in definition.sub_node_slots
+    assert definition.sub_node_slots["tools"].cardinality == "many"
+    assert definition.sub_node_slots["tools"].accepts_role is None
+
+    assert definition.sub_node_role == "tool_group"

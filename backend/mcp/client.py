@@ -31,6 +31,13 @@ class McpToolInfo:
     name: str
     param_names: list[str]
     param_json_types: dict[str, str]
+    required_names: frozenset[str] = frozenset()
+    """Which of `param_names` are in the tool's own JSON-Schema `required`
+    array. The engine now honors InputSlotSpec.required (see
+    backend/execution/engine.py's gather_inputs), so an optional MCP
+    parameter no longer needs to be hidden from the graph entirely -- it's
+    exposed as a real, non-required slot a graph author can wire to
+    override the server's own default, or leave unwired."""
 
 
 # Cached at module (process) level, keyed by (command, args), INCLUDING
@@ -95,18 +102,26 @@ async def _list_tools_async(
     for tool in response.tools:
         schema = tool.inputSchema or {}
         properties = schema.get("properties", {})
-        required = schema.get("required", [])
-        # Only the tool's own required properties become graph ports -- our
-        # engine's input-gathering loop doesn't honor InputSlotSpec.required
-        # =False (a node executes only once every declared slot is wired),
-        # so exposing optional properties as slots would force graph authors
-        # to wire them anyway. Optional properties use the server's own
-        # defaults for MVP. Discovered via live testing against the real
-        # filesystem server (read_text_file's optional tail/head params).
-        param_names = [name for name in properties if name in required]
+        required = frozenset(schema.get("required", []))
+        # Every property becomes a graph port now, required or not -- the
+        # engine's input-gathering loop honors InputSlotSpec.required (see
+        # backend/execution/engine.py's gather_inputs), so an optional
+        # property no longer needs to be hidden to avoid forcing graph
+        # authors to wire it. Left unwired, an optional param is simply
+        # omitted from the call's arguments (execute_mcp_call), and the
+        # server applies its own default -- same end behavior as before,
+        # just now actually wireable if an author wants to override it.
+        # Discovered via live testing against the real filesystem server
+        # (read_text_file's optional tail/head params).
+        param_names = list(properties.keys())
         param_json_types = {name: properties[name].get("type", "string") for name in param_names}
         infos.append(
-            McpToolInfo(name=tool.name, param_names=param_names, param_json_types=param_json_types)
+            McpToolInfo(
+                name=tool.name,
+                param_names=param_names,
+                param_json_types=param_json_types,
+                required_names=required,
+            )
         )
     return infos
 

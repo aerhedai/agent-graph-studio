@@ -177,12 +177,25 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
           </div>
 
           {activeTypeInfo &&
-            Object.entries(activeTypeInfo.config_schema.properties ?? {}).map(([name, propSchema]) => (
-              <div key={name} className="config-panel__field">
-                <label htmlFor={`field-${name}`}>{propSchema.title ?? name}</label>
-                {renderPrimitiveField(name, propSchema, draftConfig[name], setDraftField)}
-              </div>
-            ))}
+            (() => {
+              // spec-014: same "read the schema's own required array"
+              // treatment as ConfigPanel's node-config fields, applied here
+              // to a connection type's own config_schema.
+              const requiredFields = new Set(activeTypeInfo.config_schema.required ?? []);
+              return Object.entries(activeTypeInfo.config_schema.properties ?? {}).map(
+                ([name, propSchema]) => (
+                  <div key={name} className="config-panel__field">
+                    <label htmlFor={`field-${name}`}>
+                      {propSchema.title ?? name}
+                      {!requiredFields.has(name) && (
+                        <span className="config-panel__optional-tag">optional</span>
+                      )}
+                    </label>
+                    {renderPrimitiveField(name, propSchema, draftConfig[name], setDraftField)}
+                  </div>
+                ),
+              );
+            })()}
 
           {testResult && (
             <div
