@@ -37,6 +37,7 @@ def _resolve_fanout_slots(
     inputs=[],
     outputs=[],
     config_model=FanOutConfig,
+    category="core",
     resolve_slots=_resolve_fanout_slots,
 )
 def execute_fan_out(ctx: ExecutionContext) -> NodeResult:

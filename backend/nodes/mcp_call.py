@@ -70,6 +70,7 @@ def _default_terminal_approval(tool_name: str, arguments: dict[str, Any]) -> boo
     inputs=[],
     outputs=[],
     config_model=McpCallConfig,
+    category="connectivity",
     resolve_slots=_resolve_mcp_slots,
 )
 def execute_mcp_call(ctx: ExecutionContext) -> NodeResult:

@@ -1,3 +1,4 @@
+import { ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
 import { fetchConnectionModels, fetchConnectionTypes, fetchConnections } from "../api/client";
 
@@ -53,16 +54,19 @@ export function ModelField({ value, onChange, connectionName }: ModelFieldProps)
   if (models && models.length > 0) {
     const options = !stringValue || models.includes(stringValue) ? models : [stringValue, ...models];
     return (
-      <select id="field-model" value={stringValue} onChange={(e) => onChange(e.target.value)}>
-        <option value="" disabled>
-          Select a model...
-        </option>
-        {options.map((m) => (
-          <option key={m} value={m}>
-            {m}
+      <span className="select-wrap">
+        <select id="field-model" value={stringValue} onChange={(e) => onChange(e.target.value)}>
+          <option value="" disabled>
+            Select a model...
           </option>
-        ))}
-      </select>
+          {options.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+        <ChevronDown className="select-wrap__chevron" size={14} />
+      </span>
     );
   }
 

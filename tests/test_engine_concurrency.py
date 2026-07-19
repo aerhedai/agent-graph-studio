@@ -35,6 +35,7 @@ def _build_registry() -> NodeRegistry:
             outputs=[OutputSlotSpec("text", TEXT)],
             config_model=_EmptyConfig,
             execute=_root_execute,
+            category="core",
         )
     )
     registry.register(
@@ -44,6 +45,7 @@ def _build_registry() -> NodeRegistry:
             outputs=[OutputSlotSpec("text", TEXT)],
             config_model=_EmptyConfig,
             execute=_slow_echo_execute,
+            category="core",
         )
     )
     return registry

@@ -44,6 +44,7 @@ def _resolve_merge_slots(
     inputs=[],
     outputs=[],
     config_model=MergeConfig,
+    category="core",
     resolve_slots=_resolve_merge_slots,
 )
 def execute_merge(ctx: ExecutionContext) -> NodeResult:

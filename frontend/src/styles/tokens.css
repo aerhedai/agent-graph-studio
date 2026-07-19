@@ -1,0 +1,79 @@
+/* SPEC-013: the design token system -- every color/spacing/radius/easing
+value used anywhere in canvas/ or panels/ is defined here once, as CSS
+custom properties, and nowhere else. No component reaches for a hardcoded
+hex value; that's what makes "cohesive" actually enforceable rather than
+aspirational (spec-013 §4).
+
+Concept: "circuit at night" -- a cool graphite canvas with category and
+status colors that read as glowing signal traces against it, tying the
+palette to this project's own subject (a graph that executes/flows)
+instead of a generic trendy dark theme. Deliberately single-theme: SPEC-013
+§3 puts light mode / theme switching out of scope ("ship one deliberate,
+cohesive dark theme well"), so there is no @media (prefers-color-scheme)
+branch here -- that's a choice, not an oversight.
+*/
+
+:root {
+  /* --- base surfaces --- */
+  --color-canvas: #0a0c11;
+  --color-surface: #14161d;
+  --color-surface-raised: #1b1e28;
+  --color-border: #262a38;
+  --color-border-strong: #3a3f52;
+  --color-text: #e8e9f0;
+  --color-text-muted: #8b90a3;
+
+  /* General interactive-UI accent (buttons, focus rings, active tabs,
+     the "selected but not running" node outline) -- kept as its own token
+     even though it shares the AI category's violet value today: AI is
+     this product's actual core value proposition ("Agent Graph Studio"),
+     so the brand accent and the AI category color being the same hue is
+     a deliberate choice, not a shortcut. Category vs. general-accent usage
+     stays semantically distinct in component CSS (--cat-ai for "this is
+     an AI-category node", --color-accent for "this is an interactive
+     control"), so they can diverge later without a search-and-replace. */
+  --color-accent: #a970ff;
+
+  /* --- category colors: persistent node identity (icon chip, palette
+     sections) -- derived from backend registry `category` metadata, never
+     a hardcoded per-node-type list (spec-013 §4) --- */
+  --cat-triggers: #f5a623;
+  --cat-core: #4f8ef7;
+  --cat-ai: #a970ff;
+  --cat-data: #2bb3a3;
+  --cat-connectivity: #ef6ca0;
+
+  /* --- status colors: transient execution state (node outline, edge
+     color) -- only ever shown during/after a real run, driven by actual
+     trace/polling data, never a decorative loop (spec-013 §4) --- */
+  --status-idle: #4b4f5e;
+  --status-running: #f59e0b;
+  --status-success: #22c55e;
+  --status-error: #f43f5e;
+
+  /* --- spacing / radius scale --- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+
+  /* --- typography --- */
+  --font-sans: system-ui, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, Consolas, monospace;
+
+  /* --- motion: real easing curves, not linear fades (spec-013's own hard
+     requirement) -- --ease-flow stays linear deliberately: a continuously
+     looping dash-offset (edge "data flowing" animation) only reads as
+     constant-speed motion under linear timing; easing a loop like that
+     looks like stuttering, not flow. Every discrete state-change
+     transition (hover, success/error landing, accordion expand) uses
+     --ease-standard or --ease-spring instead. --- */
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-flow: linear;
+}

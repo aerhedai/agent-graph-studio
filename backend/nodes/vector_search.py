@@ -61,6 +61,7 @@ def _format_results(results: list[dict]) -> str:
     inputs=[InputSlotSpec("query", TEXT)],
     outputs=[OutputSlotSpec("results", TEXT)],
     config_model=VectorSearchConfig,
+    category="ai",
 )
 def execute_vector_search(ctx: ExecutionContext) -> NodeResult:
     config = VectorSearchConfig.model_validate(ctx.node.config)

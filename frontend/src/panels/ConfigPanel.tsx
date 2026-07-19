@@ -84,7 +84,7 @@ export function ConfigPanel({ node, onConfigChange, connectedSubNodes }: ConfigP
         </div>
       ))}
       {error && <div className="config-panel__error">{error}</div>}
-      <button type="submit" disabled={saving}>
+      <button type="submit" className="btn btn--primary" disabled={saving}>
         {saving ? "Resolving..." : "Save"}
       </button>
 
@@ -138,6 +138,7 @@ function renderField(
       <CodeMirror
         value={typeof value === "string" ? value : ""}
         height="200px"
+        theme="dark"
         extensions={[python()]}
         onChange={(v) => setField(name, v)}
       />

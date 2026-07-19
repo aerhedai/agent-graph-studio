@@ -23,6 +23,12 @@ class SubNodeSlotInfo(BaseModel):
 
 class NodeTypeInfo(BaseModel):
     type: str
+    category: str
+    """spec-013 §4/§5: which palette section this type belongs to (e.g.
+    "triggers", "core", "ai", "data", "connectivity") -- drives the
+    canvas's categorized/collapsible palette. The palette derives its
+    section list from whatever categories are actually present here,
+    never a hardcoded list on the frontend."""
     config_schema: dict[str, Any]
     dynamic_schema: bool
     """True for node types whose actual ports depend on per-instance config

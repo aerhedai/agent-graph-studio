@@ -32,6 +32,7 @@ class ModelConfig(BaseModel):
     inputs=[],
     outputs=[],
     config_model=ModelConfig,
+    category="ai",
     sub_node_role="model",
 )
 def execute_model(ctx: ExecutionContext) -> NodeResult:

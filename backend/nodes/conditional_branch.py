@@ -42,6 +42,7 @@ def _evaluate_condition(condition: str, value: str) -> bool:
         OutputSlotSpec("false_branch", TEXT),
     ],
     config_model=ConditionalBranchConfig,
+    category="core",
 )
 def execute_conditional_branch(ctx: ExecutionContext) -> NodeResult:
     config = ConditionalBranchConfig.model_validate(ctx.node.config)

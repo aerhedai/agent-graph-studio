@@ -1,4 +1,5 @@
 import type { JsonSchemaProperty } from "../api/types";
+import { Toggle } from "./Toggle";
 
 // The generic, type-driven (boolean/number/string/JSON-fallback) field
 // renderer shared by ConfigPanel (node config forms) and ConnectionPicker
@@ -15,11 +16,10 @@ export function renderPrimitiveField(
 ) {
   if (propSchema.type === "boolean") {
     return (
-      <input
+      <Toggle
         id={`field-${name}`}
-        type="checkbox"
         checked={Boolean(value)}
-        onChange={(e) => setField(name, e.target.checked)}
+        onChange={(checked) => setField(name, checked)}
       />
     );
   }

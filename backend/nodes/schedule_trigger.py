@@ -31,6 +31,7 @@ class ScheduleTriggerConfig(BaseModel):
     inputs=[],
     outputs=[OutputSlotSpec("fired_at", TEXT)],
     config_model=ScheduleTriggerConfig,
+    category="triggers",
 )
 def execute_schedule_trigger(ctx: ExecutionContext) -> NodeResult:
     return NodeResult(outputs={"fired_at": datetime.now(timezone.utc).isoformat()})

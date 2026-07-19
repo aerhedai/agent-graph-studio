@@ -45,6 +45,7 @@ class TelegramAdapterConfig(BaseModel):
         OutputSlotSpec("chat_id", TEXT),
     ],
     config_model=TelegramAdapterConfig,
+    category="triggers",
     sub_node_role="trigger_adapter",
 )
 def execute_telegram_adapter(ctx: ExecutionContext) -> NodeResult:

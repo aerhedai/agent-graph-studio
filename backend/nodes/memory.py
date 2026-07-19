@@ -31,6 +31,7 @@ class MemoryConfig(BaseModel):
     inputs=[],
     outputs=[],
     config_model=MemoryConfig,
+    category="ai",
     sub_node_role="memory",
 )
 def execute_memory(ctx: ExecutionContext) -> NodeResult:

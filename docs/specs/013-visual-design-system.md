@@ -57,4 +57,6 @@ Out of scope (future specs):
 ## 7. Open questions
 
 - Should the node palette support search/filter in addition to category browsing, given the list will keep growing (already at a dozen-plus node types)? Recommend: yes, include a simple text filter at the top of the palette now — cheap to add alongside the category work, and avoids a second spec just for this once the palette has 20+ entries.
+  Resolved: yes — implemented as `Palette.tsx`'s search input, filtering items by name and auto-expanding only the categories with a match.
 - Should error-state nodes show the actual error message inline on hover, or only in the full trace inspector panel? Recommend: a short inline tooltip on hover for immediate visibility, full detail still lives in the trace panel — matches how the screenshot's own nodes surface just enough info at a glance without cluttering the canvas.
+  Resolved: yes — implemented as `GenericNode.tsx`'s `.generic-node__error-tooltip`, shown on hover for `status-error` nodes only, sourced from the same real trace data (`Canvas.tsx`'s `errorMessageForNode`) as the trace inspector panel.
