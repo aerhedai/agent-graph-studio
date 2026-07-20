@@ -1,0 +1,44 @@
+{
+  "version": "0.1",
+  "nodes": [
+    {"id": "trigger", "type": "webhook_trigger", "config": {}},
+    {"id": "adapter", "type": "generic_adapter", "config": {}},
+
+    {"id": "parse_request", "type": "code", "config": {
+      "function_source": "def run(payload):\n    import json\n    data = json.loads(payload)\n    order_id = data.get('order_id', 'unknown')\n    question = data.get('question', '')\n    return f\"Customer asks about order {order_id}: {question}\""
+    }},
+
+    {"id": "model", "type": "model", "config": {
+      "connection": "my-pc-ollama-canvas",
+      "model": "qwen2.5:14b",
+      "system_prompt": "You are a delivery support assistant. Always use your tools to look up real information rather than guessing -- never invent an order status or delivery time.",
+      "max_tokens": 400
+    }},
+
+    {"id": "tool_group", "type": "tool_group", "config": {}},
+
+    {"id": "check_order_status", "type": "code", "config": {
+      "function_source": "def run(order_id):\n    orders = {\n        '482': 'out for delivery, arriving today by 6pm',\n        '113': 'delivered on 2026-07-18',\n        '990': 'processing, not yet shipped',\n    }\n    return orders.get(order_id, f'no record found for order {order_id}')"
+    }},
+
+    {"id": "estimate_delivery_time", "type": "code", "config": {
+      "function_source": "def run(distance_km):\n    speed_kmh = 35\n    hours = float(distance_km) / speed_kmh\n    return f'approximately {hours:.1f} hours'"
+    }},
+
+    {"id": "support_agent", "type": "agent", "config": {"max_iterations": 6}},
+
+    {"id": "respond", "type": "text_output", "config": {}}
+  ],
+  "edges": [
+    {"kind": "sub_node", "slot": "trigger_adapter", "from": {"node": "adapter"}, "to": {"node": "trigger"}},
+
+    {"from": {"node": "trigger", "slot": "payload"}, "to": {"node": "parse_request", "slot": "payload"}},
+    {"from": {"node": "parse_request", "slot": "result"}, "to": {"node": "support_agent", "slot": "task"}},
+    {"from": {"node": "support_agent", "slot": "answer"}, "to": {"node": "respond", "slot": "text"}},
+
+    {"kind": "sub_node", "slot": "model", "from": {"node": "model"}, "to": {"node": "support_agent"}},
+    {"kind": "sub_node", "slot": "tools", "from": {"node": "tool_group"}, "to": {"node": "support_agent"}},
+    {"kind": "sub_node", "slot": "tools", "from": {"node": "check_order_status"}, "to": {"node": "tool_group"}},
+    {"kind": "sub_node", "slot": "tools", "from": {"node": "estimate_delivery_time"}, "to": {"node": "tool_group"}}
+  ]
+}
