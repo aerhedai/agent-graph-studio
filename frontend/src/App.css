@@ -659,13 +659,36 @@
   gap: 6px;
   padding: 3px 6px;
   border-radius: var(--radius-sm);
+  border: 1px solid transparent;
   background: color-mix(in srgb, var(--node-accent) 10%, var(--color-surface-raised));
   cursor: pointer;
-  transition: background 120ms var(--ease-standard);
+  transition: background 120ms var(--ease-standard), border-color 120ms var(--ease-standard);
 }
 
 .generic-node__group-row:hover {
   background: color-mix(in srgb, var(--node-accent) 20%, var(--color-surface-raised));
+}
+
+/* Live per-call activity: this specific tool is genuinely mid-call right
+   now (run.active_sub_node_ids), not just "its parent agent is running
+   somewhere" -- a box-shadow-only pulse, since a 20px-tall row shouldn't
+   scale the way a whole node card does (.status-running's node-breathe
+   animation). Reuses --status-running for the same "this is live
+   execution" language as every other running indicator in the app. */
+.generic-node__group-row--active {
+  border: 1px solid var(--status-running);
+  background: color-mix(in srgb, var(--status-running) 18%, var(--color-surface-raised));
+  animation: group-row-pulse 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+@keyframes group-row-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 color-mix(in srgb, var(--status-running) 0%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 8px color-mix(in srgb, var(--status-running) 45%, transparent);
+  }
 }
 
 .generic-node__group-row-icon {

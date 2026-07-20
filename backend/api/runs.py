@@ -28,9 +28,10 @@ can never break the run's actual execution.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from backend.execution.engine import run_graph
 from backend.execution.trace import TraceRecord
@@ -51,6 +52,7 @@ class RunRecord:
     started_at: str = ""
     finished_at: str | None = None
     running_node_ids: list[str] = field(default_factory=list)
+    active_sub_node_ids: list[str] = field(default_factory=list)
     trace: list[TraceRecord] = field(default_factory=list)
     result: dict[str, Any] | None = None
     error: str | None = None
@@ -84,10 +86,38 @@ def get_run_snapshot(run_id: str) -> RunRecord | None:
         started_at=record.started_at,
         finished_at=record.finished_at,
         running_node_ids=list(record.running_node_ids),
+        active_sub_node_ids=list(record.active_sub_node_ids),
         trace=list(record.trace),
         result=record.result,
         error=record.error,
     )
+
+
+def _make_on_sub_node_activity(record: RunRecord) -> Callable[[str, str, bool], None]:
+    """A sub-node (an agent's connected `model`, or a tool invoked through
+    ADR-008's bypass) can legitimately be marked active by two concurrent
+    calls at once -- e.g. the same `model` wired into two agents that both
+    end up executing concurrently within one run. A plain add/remove would
+    let one "inactive" transition wipe an id still in use by the other
+    caller, so this ref-counts per sub-node id instead. Guarded by an
+    explicit lock, unlike `on_round_start`/`on_trace_record` below: a
+    counter increment/decrement is a compound read-modify-write, not the
+    single atomic list op the GIL-based reasoning there relies on. Built
+    fresh per `execute_run` call (one per run_id), so counts/lock are
+    isolated per run the same way `running_node_ids`/`trace` already are."""
+    counts: dict[str, int] = {}
+    lock = threading.Lock()
+
+    def on_sub_node_activity(parent_node_id: str, sub_node_id: str, active: bool) -> None:
+        with lock:
+            count = counts.get(sub_node_id, 0) + (1 if active else -1)
+            if count > 0:
+                counts[sub_node_id] = count
+            else:
+                counts.pop(sub_node_id, None)
+            record.active_sub_node_ids = list(counts.keys())
+
+    return on_sub_node_activity
 
 
 def execute_run(run_id: str, graph: GraphSpec, resources: dict[str, Any] | None = None) -> None:
@@ -107,10 +137,12 @@ def execute_run(run_id: str, graph: GraphSpec, resources: dict[str, Any] | None 
             record.running_node_ids.remove(trace_record.node_id)
         record.trace.append(trace_record)
 
+    on_sub_node_activity = _make_on_sub_node_activity(record)
+
     try:
         result = run_graph(
             graph,
-            resources=resources,
+            resources={**(resources or {}), "on_sub_node_activity": on_sub_node_activity},
             on_round_start=on_round_start,
             on_trace_record=on_trace_record,
         )
@@ -125,6 +157,7 @@ def execute_run(run_id: str, graph: GraphSpec, resources: dict[str, Any] | None 
         error = str(e)
     finally:
         record.running_node_ids = []
+        record.active_sub_node_ids = []
         record.finished_at = _utcnow_iso()
         runs_store.complete_run_record(
             run_id, record.status, record.finished_at, result_json, error

@@ -58,6 +58,24 @@ def _apply_memory_window(
     return messages[-max_messages:] if len(messages) > max_messages else messages
 
 
+def _notify_sub_node_activity(
+    resources: dict[str, Any], parent_node_id: str, sub_node_id: str, active: bool
+) -> None:
+    """Live per-call progress signal for a sub-node an agent invokes
+    directly (the model connection, or a tool via ADR-008's bypass) --
+    invisible to the engine's own `running_node_ids` since none of this
+    happens through the scheduler. A resources-bag callback (same
+    established pattern as `on_round_start`/`on_trace_record`, ADR-003),
+    not a new `run_graph()` parameter, since this happens *inside* one
+    top-level node's own execute() body, not something the scheduler
+    itself orchestrates -- keeps this a zero-engine-change addition. A
+    no-op when nothing is listening (every pre-existing test/caller that
+    doesn't set this resource key)."""
+    callback = resources.get("on_sub_node_activity")
+    if callback is not None:
+        callback(parent_node_id, sub_node_id, active)
+
+
 def _tool_definition(node: NodeSpec) -> ToolDefinition:
     """Derives a tool's parameter schema from its referenced node's actual
     resolved input schema (resolve_slots or static .inputs, SPEC-002's
@@ -216,6 +234,14 @@ def execute_agent(ctx: ExecutionContext) -> NodeResult:
             if memory_config is not None
             else messages
         )
+        # memory has no external call of its own -- it's a synchronous
+        # window applied above -- but it genuinely shapes this exact model
+        # call (windowed vs. the raw `messages`), so "in use" means "for as
+        # long as it's feeding the current call", the same window as the
+        # model itself, not a separate call boundary.
+        _notify_sub_node_activity(ctx.resources, ctx.node.id, model_node.id, True)
+        if memory_ids:
+            _notify_sub_node_activity(ctx.resources, ctx.node.id, memory_ids[0], True)
         try:
             response = connection_definition.complete_with_tools(
                 connection_config,
@@ -227,6 +253,10 @@ def execute_agent(ctx: ExecutionContext) -> NodeResult:
             )
         except Exception as e:
             raise NodeExecutionError(f"agent model call failed: {e}") from e
+        finally:
+            _notify_sub_node_activity(ctx.resources, ctx.node.id, model_node.id, False)
+            if memory_ids:
+                _notify_sub_node_activity(ctx.resources, ctx.node.id, memory_ids[0], False)
 
         total_input_tokens += response.input_tokens
         total_output_tokens += response.output_tokens
@@ -248,32 +278,46 @@ def execute_agent(ctx: ExecutionContext) -> NodeResult:
             }
         )
 
-        for call in response.tool_calls:
-            tool_node = nodes_by_id.get(call.name) if call.name in tool_ids else None
-            if tool_node is None:
-                error_text = f"Unknown tool '{call.name}'. Available tools: {', '.join(tool_ids)}"
-                started_at = _utcnow_iso()
-                record = TraceRecord(
-                    run_id=str(uuid4()),
-                    node_id=call.name,
-                    node_type="unknown",
-                    started_at=started_at,
-                    finished_at=_utcnow_iso(),
-                    inputs=call.arguments,
-                    outputs={},
-                    error=error_text,
-                )
+        # spec-014's tool_group card gets its own live signal too (mostly
+        # for the collapsed view, which has no per-tool rows to light up)
+        # -- active for this whole batch of tool calls, not per-call, since
+        # a collapsed group can't show which specific tool is running.
+        if tool_group_ids:
+            _notify_sub_node_activity(ctx.resources, ctx.node.id, tool_group_ids[0], True)
+        try:
+            for call in response.tool_calls:
+                tool_node = nodes_by_id.get(call.name) if call.name in tool_ids else None
+                if tool_node is None:
+                    error_text = f"Unknown tool '{call.name}'. Available tools: {', '.join(tool_ids)}"
+                    started_at = _utcnow_iso()
+                    record = TraceRecord(
+                        run_id=str(uuid4()),
+                        node_id=call.name,
+                        node_type="unknown",
+                        started_at=started_at,
+                        finished_at=_utcnow_iso(),
+                        inputs=call.arguments,
+                        outputs={},
+                        error=error_text,
+                    )
+                    child_traces.append([record])
+                    messages.append(
+                        {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": error_text}
+                    )
+                    continue
+
+                _notify_sub_node_activity(ctx.resources, ctx.node.id, tool_node.id, True)
+                try:
+                    record, tool_text = _run_tool(call.name, call.arguments, tool_node, ctx.resources)
+                finally:
+                    _notify_sub_node_activity(ctx.resources, ctx.node.id, tool_node.id, False)
                 child_traces.append([record])
                 messages.append(
-                    {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": error_text}
+                    {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": tool_text}
                 )
-                continue
-
-            record, tool_text = _run_tool(call.name, call.arguments, tool_node, ctx.resources)
-            child_traces.append([record])
-            messages.append(
-                {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": tool_text}
-            )
+        finally:
+            if tool_group_ids:
+                _notify_sub_node_activity(ctx.resources, ctx.node.id, tool_group_ids[0], False)
 
     raise NodeExecutionError(
         f"agent exceeded max_iterations ({config.max_iterations}) without producing a final answer"

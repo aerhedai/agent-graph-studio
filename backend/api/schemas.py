@@ -81,6 +81,13 @@ class RunStatusResponse(BaseModel):
     run whose only surviving record predates this field (there are none in
     practice, since this ships atomically with the runs table itself)."""
     running_node_ids: list[str]
+    active_sub_node_ids: list[str]
+    """Live per-call activity signal: a sub-node (an agent's connected
+    `model`, or a tool invoked directly via ADR-008's bypass) currently
+    mid-call. Invisible to `running_node_ids` since none of this happens
+    through the engine's own scheduler -- see
+    `backend.nodes.agent._notify_sub_node_activity`. Always empty for a
+    historical/persisted run (same reasoning as `running_node_ids` above)."""
     trace: list[TraceRecord]
     result: dict[str, Any] | None
     error: str | None

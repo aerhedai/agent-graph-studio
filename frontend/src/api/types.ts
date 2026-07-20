@@ -77,6 +77,7 @@ export interface RunStatusResponse {
   run_id: string;
   status: "running" | "completed" | "failed";
   running_node_ids: string[];
+  active_sub_node_ids: string[];
   trace: TraceRecord[];
   result: Record<string, unknown> | null;
   error: string | null;

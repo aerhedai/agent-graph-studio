@@ -26,10 +26,10 @@ import {
   SUB_NODE_HANDLE_ID,
   type GenericFlowNode,
   type GenericNodeData,
-  type NodeStatus,
 } from "./GenericNode";
 import { Palette } from "./Palette";
 import { StatusEdge } from "./StatusEdge";
+import { errorMessageForNode, findTraceRecord, statusForNode } from "./traceStatus";
 import { slotTypesCompatible } from "./typeCompat";
 
 const nodeTypes = { generic: GenericNode };
@@ -40,23 +40,6 @@ let idCounter = 0;
 function nextNodeId(typeName: string): string {
   idCounter += 1;
   return `${typeName}_${idCounter}`;
-}
-
-function statusForNode(nodeId: string, run: RunStatusResponse | null): NodeStatus {
-  if (!run) return "pending";
-  const record = run.trace.find((t) => t.node_id === nodeId);
-  if (record) return record.error ? "error" : "success";
-  if (run.running_node_ids.includes(nodeId)) return "running";
-  return "pending";
-}
-
-// spec-013 §7 (resolved open question, adopted its own "yes" recommendation):
-// a failed node shows its error message via a short inline hover tooltip for
-// immediate visibility, in addition to the full detail already available in
-// the trace inspector panel -- real trace data, not a placeholder string.
-function errorMessageForNode(nodeId: string, run: RunStatusResponse | null): string | null {
-  if (!run) return null;
-  return run.trace.find((t) => t.node_id === nodeId)?.error ?? null;
 }
 
 // spec-014: a "hybrid" node (e.g. `tool_group`) is simultaneously a root
@@ -356,15 +339,27 @@ function CanvasInner() {
     return map;
   }, [edges, nodes]);
 
+  // spec-013/014 + live sub-node activity: a contained tool's row lights
+  // up while it's genuinely mid-call (`run.active_sub_node_ids`, set by
+  // agent.py's _notify_sub_node_activity), re-derived every poll tick
+  // (~500ms) so this is the actual "live" cadence, not a one-shot
+  // snapshot -- see traceStatus.ts's statusForNode for the same signal
+  // applied to a root/sub-node card.
   const groupContents = useMemo(() => {
-    const map: Record<string, { id: string; nodeType: string; category: string }[]> = {};
+    const activeIds = new Set(run?.active_sub_node_ids ?? []);
+    const map: Record<string, { id: string; nodeType: string; category: string; active: boolean }[]> = {};
     for (const [childId, groupId] of Object.entries(containedBy)) {
       const child = nodes.find((n) => n.id === childId);
       if (!child) continue;
-      (map[groupId] ??= []).push({ id: child.id, nodeType: child.data.nodeType, category: child.data.category });
+      (map[groupId] ??= []).push({
+        id: child.id,
+        nodeType: child.data.nodeType,
+        category: child.data.category,
+        active: activeIds.has(child.id),
+      });
     }
     return map;
-  }, [containedBy, nodes]);
+  }, [containedBy, nodes, run]);
 
   // The rendered node/edge lists React Flow actually draws: a contained
   // tool is hidden entirely (represented only by its row inside the
@@ -482,7 +477,7 @@ function CanvasInner() {
   }
 
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null;
-  const selectedTraceRecord = run?.trace.find((t) => t.node_id === selectedNodeId) ?? null;
+  const selectedTraceRecord = run && selectedNodeId ? findTraceRecord(run.trace, selectedNodeId) : null;
 
   // spec-012: every sub-node currently wired into the selected node's own
   // slots, for ConfigPanel's read-only summary -- derived from `edges`

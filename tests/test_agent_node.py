@@ -106,6 +106,7 @@ def _ctx(
     memory_node: NodeSpec | None = None,
     omit_connection_profile: bool = False,
     include_tool_group: bool = True,
+    on_sub_node_activity: Callable[[str, str, bool], None] | None = None,
 ) -> ExecutionContext:
     model_node = model_node if model_node is not None else _model_node()
     # spec-014: agent.tools resolves to zero or one `tool_group` sub-node
@@ -131,14 +132,18 @@ def _ctx(
             name=model_node.config["connection"], type=connection_type, config={}
         )
 
+    resources: dict[str, Any] = {
+        "connection_profiles": connection_profiles,
+        "nodes_by_id": {n.id: n for n in all_nodes},
+        "sub_nodes": sub_nodes,
+    }
+    if on_sub_node_activity is not None:
+        resources["on_sub_node_activity"] = on_sub_node_activity
+
     return ExecutionContext(
         node=node,
         inputs={"task": task},
-        resources={
-            "connection_profiles": connection_profiles,
-            "nodes_by_id": {n.id: n for n in all_nodes},
-            "sub_nodes": sub_nodes,
-        },
+        resources=resources,
     )
 
 
@@ -430,3 +435,140 @@ def test_tool_schema_derivation_matches_referenced_code_node_params():
     assert tool_def.name == "multiply_tool"
     assert set(tool_def.parameters["properties"].keys()) == {"a", "b"}
     assert set(tool_def.parameters["required"]) == {"a", "b"}
+
+
+# --- live sub-node activity signal (model calls + tool calls invisible to
+# the engine's own running_node_ids, since they happen inside this one
+# top-level node's execute() body -- see agent.py's _notify_sub_node_activity
+# docstring) -----------------------------------------------------------------
+
+
+def test_sub_node_activity_notifies_model_and_tool_transitions_in_order():
+    global _current_impl
+    model_call_count = 0
+    calls = []
+
+    def impl(config, **kwargs):
+        nonlocal model_call_count
+        model_call_count += 1
+        calls.append(f"model_call_{model_call_count}")
+        if model_call_count == 1:
+            return ToolCallResponse(
+                text=None,
+                tool_calls=[ToolCallRequest(id="call_1", name="multiply_tool", arguments={"a": "6", "b": "7"})],
+            )
+        return ToolCallResponse(text="42", tool_calls=[])
+
+    _current_impl = impl
+
+    events: list[tuple[str, str, bool]] = []
+
+    def on_sub_node_activity(parent_node_id, sub_node_id, active):
+        events.append((parent_node_id, sub_node_id, active))
+        calls.append(f"{sub_node_id}:{active}")
+
+    node = _agent_node()
+    tool_node = _multiply_tool_node()
+    ctx = _ctx(node, "6 times 7", [tool_node], on_sub_node_activity=on_sub_node_activity)
+
+    result = execute_agent(ctx)
+
+    assert result.outputs == {"answer": "42"}
+    assert events == [
+        ("agent_1", "model_1", True),
+        ("agent_1", "model_1", False),
+        ("agent_1", "tool_group_1", True),
+        ("agent_1", "multiply_tool", True),
+        ("agent_1", "multiply_tool", False),
+        ("agent_1", "tool_group_1", False),
+        ("agent_1", "model_1", True),
+        ("agent_1", "model_1", False),
+    ]
+    # The model call for iteration 2 only happens after the tool call fully
+    # completed -- proves activity notifications land in real execution
+    # order, not just as an unordered set. Each "active" notification fires
+    # immediately before its call, "inactive" immediately after.
+    assert calls == [
+        "model_1:True",
+        "model_call_1",
+        "model_1:False",
+        "tool_group_1:True",
+        "multiply_tool:True",
+        "multiply_tool:False",
+        "tool_group_1:False",
+        "model_1:True",
+        "model_call_2",
+        "model_1:False",
+    ]
+
+
+def test_sub_node_activity_notifies_memory_alongside_the_model_call():
+    """Memory has no external call of its own (it's a synchronous window
+    applied inline), but it genuinely shapes the current model call --
+    "in use" means active for that same window, not a separate call
+    boundary. No separate before/after pair of its own."""
+    global _current_impl
+    _current_impl = lambda config, **kwargs: ToolCallResponse(text="done", tool_calls=[])
+
+    events: list[tuple[str, str, bool]] = []
+    node = _agent_node()
+    tool_node = _multiply_tool_node()
+    ctx = _ctx(
+        node,
+        "hi",
+        [tool_node],
+        memory_node=_memory_node(),
+        on_sub_node_activity=lambda parent, sub, active: events.append((parent, sub, active)),
+    )
+
+    execute_agent(ctx)
+
+    assert events == [
+        ("agent_1", "model_1", True),
+        ("agent_1", "memory_1", True),
+        ("agent_1", "model_1", False),
+        ("agent_1", "memory_1", False),
+    ]
+
+
+def test_sub_node_activity_omits_memory_when_none_connected():
+    """spec-012 §4: memory is a zero-or-one sub-node slot -- with none
+    connected, there's nothing to notify at all, not a notification for a
+    node id that doesn't exist."""
+    global _current_impl
+    _current_impl = lambda config, **kwargs: ToolCallResponse(text="done", tool_calls=[])
+
+    events: list[tuple[str, str, bool]] = []
+    node = _agent_node()
+    tool_node = _multiply_tool_node()
+    ctx = _ctx(
+        node,
+        "hi",
+        [tool_node],
+        on_sub_node_activity=lambda parent, sub, active: events.append((parent, sub, active)),
+    )  # no memory_node passed
+
+    execute_agent(ctx)
+
+    assert events == [
+        ("agent_1", "model_1", True),
+        ("agent_1", "model_1", False),
+    ]
+
+
+def test_sub_node_activity_callback_absent_is_a_safe_noop():
+    """Every pre-existing test above omits on_sub_node_activity entirely --
+    this names that regression explicitly rather than relying on it being
+    incidental: resources.get("on_sub_node_activity") returns None and
+    _notify_sub_node_activity must not raise."""
+    global _current_impl
+    _current_impl = lambda config, **kwargs: ToolCallResponse(text="Paris", tool_calls=[])
+
+    node = _agent_node()
+    tool_node = _multiply_tool_node()
+    ctx = _ctx(node, "What is the capital of France?", [tool_node])
+    assert "on_sub_node_activity" not in ctx.resources
+
+    result = execute_agent(ctx)
+
+    assert result.outputs == {"answer": "Paris"}
