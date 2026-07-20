@@ -50,8 +50,11 @@ export type GenericNodeData = {
   // spec-014: populated by Canvas.tsx's containment tracking for a
   // `tool_group` (or any future hybrid) node only -- the real, full-state
   // nodes currently contained by this group, for the compact row list.
-  // Undefined/empty for every non-group node type.
-  containedNodes?: { id: string; nodeType: string; category: string }[];
+  // Undefined/empty for every non-group node type. `active` is the live
+  // per-call signal (Canvas.tsx's groupContents, driven by
+  // run.active_sub_node_ids) -- true only while this specific tool is
+  // genuinely mid-call, not just while its parent agent is running.
+  containedNodes?: { id: string; nodeType: string; category: string; active: boolean }[];
 };
 
 export type GenericFlowNode = Node<GenericNodeData, "generic">;
@@ -237,7 +240,7 @@ export function GenericNode({ data, selected }: NodeProps<GenericFlowNode>) {
               return (
                 <div
                   key={n.id}
-                  className="generic-node__group-row"
+                  className={`generic-node__group-row${n.active ? " generic-node__group-row--active" : ""}`}
                   style={{ "--node-accent": `var(${rowColorVar})` } as CSSProperties}
                   onClick={(e) => {
                     e.stopPropagation();

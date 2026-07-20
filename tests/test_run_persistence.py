@@ -273,6 +273,49 @@ def test_nested_child_traces_survive_persistence_for_loop_node():
     assert loop_trace_persisted["child_traces"] == loop_trace_live["child_traces"]
 
 
+def test_run_status_response_includes_empty_active_sub_node_ids_for_non_agent_graph():
+    submit = client.post("/runs", json=_linear_graph())
+    assert submit.status_code == 202
+    run_id = submit.json()["run_id"]
+
+    live = _wait_for_run(run_id)
+    assert live["active_sub_node_ids"] == []
+
+    # Also present (and empty) on the SQLite-fallback path, same as
+    # running_node_ids -- a historical run has nothing live to report.
+    del runs_module._runs[run_id]
+    response = client.get(f"/runs/{run_id}")
+    assert response.json()["active_sub_node_ids"] == []
+
+
+def test_on_sub_node_activity_ref_counts_a_sub_node_shared_across_two_concurrent_activations():
+    """A sub-node id can be marked active by two independent callers at
+    once (e.g. the same `model` wired into two agents executing
+    concurrently within one run) -- a naive add/remove would let one
+    "inactive" transition wipe an id the other caller is still using.
+    Unit-tests `_make_on_sub_node_activity` directly against a bare
+    RunRecord, without going through a real run."""
+    record = runs_module.RunRecord(run_id="r-ref-count")
+    on_activity = runs_module._make_on_sub_node_activity(record)
+
+    on_activity("agent_1", "model_1", True)
+    on_activity("agent_2", "model_1", True)  # shared model, second caller
+    assert record.active_sub_node_ids == ["model_1"]
+
+    on_activity("agent_1", "model_1", False)
+    assert record.active_sub_node_ids == ["model_1"]  # still in use by agent_2
+
+    on_activity("agent_2", "model_1", False)
+    assert record.active_sub_node_ids == []
+
+    # Distinct ids don't interfere with each other's counts.
+    on_activity("agent_1", "model_1", True)
+    on_activity("agent_1", "tool_1", True)
+    assert set(record.active_sub_node_ids) == {"model_1", "tool_1"}
+    on_activity("agent_1", "tool_1", False)
+    assert record.active_sub_node_ids == ["model_1"]
+
+
 def test_sqlite_write_failure_does_not_break_the_run(monkeypatch):
     # Patch _connect (the actual sqlite3 boundary), not create_run_record/
     # complete_run_record themselves -- this exercises the real try/except
