@@ -11,7 +11,9 @@ import type {
   RunListResponse,
   RunStatusResponse,
   RunSubmitResponse,
+  SettingsResponse,
   TestConnectionResponse,
+  UpdateSettingsResponse,
 } from "./types";
 
 // No axios -- this project's convention (backend and frontend alike) is to
@@ -216,4 +218,17 @@ export async function deleteGraph(graphId: string): Promise<void> {
   if (!response.ok) {
     throw new Error(`DELETE /graphs/${graphId} failed (${response.status})`);
   }
+}
+
+// --- spec-018: the public base URL setting (auto-registered webhooks) ---
+
+export function getSettings(): Promise<SettingsResponse> {
+  return request<SettingsResponse>("/settings");
+}
+
+export function updateSettings(publicBaseUrl: string): Promise<UpdateSettingsResponse> {
+  return request<UpdateSettingsResponse>("/settings", {
+    method: "PUT",
+    body: JSON.stringify({ public_base_url: publicBaseUrl }),
+  });
 }

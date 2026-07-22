@@ -96,6 +96,7 @@
 .run-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 6px 12px;
   border-bottom: 1px solid var(--color-border);

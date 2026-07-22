@@ -1,6 +1,12 @@
 import { ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
-import { createConnection, fetchConnectionTypes, fetchConnections, testConnection } from "../api/client";
+import {
+  createConnection,
+  deleteConnection,
+  fetchConnectionTypes,
+  fetchConnections,
+  testConnection,
+} from "../api/client";
 import type { ConnectionInfo, ConnectionTypeInfo } from "../api/types";
 import { renderPrimitiveField } from "./fieldRenderers";
 
@@ -30,6 +36,7 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   function loadLists() {
     return Promise.all([fetchConnections(), fetchConnectionTypes()]).then(
@@ -103,6 +110,24 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
     }
   }
 
+  // spec-018: replaces the curl-only DELETE /connections/{name} workaround
+  // -- deletes whichever connection is currently selected in the dropdown.
+  async function handleDelete() {
+    if (!value) return;
+    if (!window.confirm(`Delete connection "${value}"? This can't be undone.`)) return;
+    setDeleting(true);
+    setLoadError(null);
+    try {
+      await deleteConnection(value);
+      onChange("");
+      await loadLists();
+    } catch (e) {
+      setLoadError(String(e));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="connection-picker">
       {loadError && <div className="config-panel__error">{loadError}</div>}
@@ -127,6 +152,15 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
         </span>
         <button type="button" className="btn btn--secondary" onClick={() => setShowForm((s) => !s)}>
           {showForm ? "Cancel" : "+ New connection"}
+        </button>
+        <button
+          type="button"
+          className="btn btn--secondary"
+          onClick={() => void handleDelete()}
+          disabled={!value || deleting}
+          title={value ? `Delete "${value}"` : "Select a connection first"}
+        >
+          {deleting ? "Deleting..." : "Delete"}
         </button>
       </div>
 

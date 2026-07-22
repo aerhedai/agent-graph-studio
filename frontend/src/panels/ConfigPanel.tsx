@@ -153,7 +153,15 @@ function renderField(
     );
   }
 
-  if (name === "connection") {
+  // spec-018: mirrors backend/connections/resolver.py's
+  // connection_reference_names() rule exactly -- any field that is
+  // literally "connection" or ends with "_connection" (bot_token_connection,
+  // embedding_model_connection, ...) is a connection reference and gets the
+  // real picker, not a plain text box. Was previously an exact match on
+  // "connection" only, which is what let a real bot token get typed
+  // directly into a graph JSON file (no picker existed to make the
+  // reference-vs-value distinction obvious).
+  if (name === "connection" || name.endsWith("_connection")) {
     return (
       <ConnectionPicker
         value={typeof value === "string" ? value : undefined}
