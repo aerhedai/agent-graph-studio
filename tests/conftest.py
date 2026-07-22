@@ -3,10 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from cryptography.fernet import Fernet
 
 from backend.registry.base import NodeRegistry
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "graphs"
+
+# spec-017: the fixed shared secret every test file's TestClient sends via
+# `Authorization: Bearer {TEST_API_KEY}` -- must match isolated_api_key
+# below, which sets AGENT_GRAPH_STUDIO_API_KEY to this same literal value.
+TEST_API_KEY = "test-api-key"
 
 
 def load_fixture_text(name: str) -> str:
@@ -46,6 +52,22 @@ def isolated_graphs_db(tmp_path, monkeypatch):
     may ever read or write the real ~/.agent-graph-studio/graphs.db
     (spec-015). Mirrors isolated_runs_db above exactly."""
     monkeypatch.setenv("AGENT_GRAPH_STUDIO_GRAPHS_DB_PATH", str(tmp_path / "graphs.db"))
+
+
+@pytest.fixture(autouse=True)
+def isolated_encryption_key(monkeypatch):
+    """Every test gets a real, freshly-generated Fernet key -- the
+    connections store (spec-017) refuses to operate without one, so every
+    test touching it (directly or via the API) needs this set."""
+    monkeypatch.setenv("AGENT_GRAPH_STUDIO_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+
+@pytest.fixture(autouse=True)
+def isolated_api_key(monkeypatch):
+    """Every test gets the same fixed shared credential (spec-017) -- see
+    TEST_API_KEY above, which every TestClient(app, headers=...) across the
+    test suite sends by default."""
+    monkeypatch.setenv("AGENT_GRAPH_STUDIO_API_KEY", TEST_API_KEY)
 
 
 @pytest.fixture

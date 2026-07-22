@@ -12,7 +12,9 @@ from backend.storage import runs_store
 from backend.triggers import registry as trigger_registry
 from backend.triggers import runner as trigger_runner
 
-client = TestClient(app)
+# spec-017: must match tests/conftest.py's TEST_API_KEY (the isolated_api_key
+# fixture sets AGENT_GRAPH_STUDIO_API_KEY to this same literal value).
+client = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
 
 
 def _linear_graph(value: str = "hello world") -> dict:

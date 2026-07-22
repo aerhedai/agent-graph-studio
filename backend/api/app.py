@@ -17,12 +17,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, Body, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 import backend.connections  # noqa: F401 -- import side effect registers every connection type
@@ -54,7 +55,13 @@ from backend.api.schemas import (
 from backend.connections.base import default_connection_registry
 from backend.connections.errors import ConnectionNotFoundError, DuplicateConnectionError
 from backend.connections.resolver import resolve_connection_profiles, resolve_connections
-from backend.connections.store import add_connection, delete_connection, get_connection, list_connections
+from backend.connections.store import (
+    add_connection,
+    delete_connection,
+    ensure_encryption_key_configured,
+    get_connection,
+    list_connections,
+)
 from backend.registry.base import default_registry, effective_inputs, effective_outputs
 from backend.schema.models import GraphSpec, NodeSpec
 from backend.storage import graphs_store, runs_store
@@ -67,6 +74,66 @@ from backend.validation.validator import validate_graph
 logger = logging.getLogger(__name__)
 
 
+class MissingApiKeyError(RuntimeError):
+    """spec-017: raised eagerly at API startup when AGENT_GRAPH_STUDIO_API_KEY
+    isn't set -- refusing to start is the point, mirroring
+    backend/connections/store.py's MissingEncryptionKeyError exactly."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "AGENT_GRAPH_STUDIO_API_KEY is not set -- refusing to start without a real "
+            "shared credential (see docs/DEPLOYMENT.md)."
+        )
+
+
+# spec-017: paths reachable with no credential at all -- schema/shape only
+# (not data), or a health check for container orchestration (SPEC-016).
+_AUTH_EXEMPT_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
+
+
+def _configured_api_key() -> str:
+    key = os.environ.get("AGENT_GRAPH_STUDIO_API_KEY")
+    if not key:
+        raise MissingApiKeyError()
+    return key
+
+
+def ensure_api_key_configured() -> None:
+    """Eager startup check, called from _lifespan -- see module docstring
+    on MissingApiKeyError for why this can't be lazy."""
+    _configured_api_key()
+
+
+def require_api_key(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    key: str | None = None,
+) -> None:
+    """spec-017: one global dependency (attached to the whole app, not
+    per-route -- see `app = FastAPI(dependencies=...)` below), protecting
+    every route including ones added dynamically later via
+    `app.add_api_route` (the webhook routes -- verified by a real test, not
+    assumed, since a router-level dependency silently not covering a
+    dynamically-added route would be a real, dangerous gap).
+
+    Two ways to present the one shared secret: `Authorization: Bearer
+    <key>` (the canvas, normal case) or a `?key=<key>` query parameter (for
+    external callers like Telegram that can't set a custom header on a
+    webhook callback URL -- see docs/specs/017-production-hardening.md §6's
+    resolved open question for the full reasoning and disclosed tradeoff).
+    """
+    if request.url.path in _AUTH_EXEMPT_PATHS:
+        return
+    configured = _configured_api_key()
+    supplied: str | None = None
+    if authorization and authorization.startswith("Bearer "):
+        supplied = authorization[len("Bearer ") :]
+    elif key:
+        supplied = key
+    if supplied != configured:
+        raise HTTPException(status_code=401, detail="Missing or invalid API key")
+
+
 def _utcnow_iso() -> str:
     # Mirrors backend/api/runs.py's private _utcnow_iso exactly -- this
     # project's established small-duplication-over-shared-utils convention
@@ -76,6 +143,12 @@ def _utcnow_iso() -> str:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    # Spec-017: eager, explicit checks first -- both secrets must be
+    # genuinely configured before this process is allowed to start serving
+    # anything, not just incidentally validated the first time some other
+    # operation happens to need them.
+    ensure_encryption_key_configured()
+    ensure_api_key_configured()
     # Spec-015: re-arm every persisted is_active graph's triggers on real
     # process startup -- `_reactivate_persisted_graphs` is defined later in
     # this module; that's fine, its name is only resolved when this
@@ -85,17 +158,27 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="Agent Graph Studio API", lifespan=_lifespan)
+# spec-017: a single shared credential required on every route (see
+# require_api_key above) -- app-level `dependencies` attaches to the app's
+# router itself, so routes added later via `app.add_api_route` (the
+# dynamic webhook routes, SPEC-009) are covered too, not just the ones
+# defined directly below. Local single-user tool origins remain permissive
+# for CORS -- auth is the actual access control now, not CORS.
+app = FastAPI(title="Agent Graph Studio API", lifespan=_lifespan, dependencies=[Depends(require_api_key)])
 
-# Local, single-user tool -- no auth, permissive CORS for the Vite dev server
-# (and any other local origin). Spec-005 §3 explicitly puts auth/multi-tenancy
-# out of scope; revisit only if this is ever hosted for others.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    """Unauthenticated (see _AUTH_EXEMPT_PATHS) -- for container
+    orchestration health checks (SPEC-016's Compose setup can use this)."""
+    return {"status": "ok"}
 
 
 def _slot_info_list(slots) -> list[SlotInfo]:
@@ -517,9 +600,15 @@ def _register_triggers(graph_id: str, graph: GraphSpec) -> list[trigger_registry
         elif node.type == "webhook_trigger":
             path = _webhook_path(graph_id, node.id)
             app.add_api_route(path, _make_webhook_handler(graph_id, node.id), methods=["POST"])
+            # spec-017: the *reported* endpoint carries the API key as a
+            # query param, ready to use directly in an external service's
+            # webhook config (e.g. Telegram's setWebhook) -- but route
+            # registration above uses the bare `path`, since a route
+            # pattern isn't a URL and can't include a query string.
+            display_path = f"{path}?key={_configured_api_key()}"
             triggers.append(
                 trigger_registry.TriggerRecord(
-                    node_id=node.id, type="webhook_trigger", endpoint_or_schedule=path
+                    node_id=node.id, type="webhook_trigger", endpoint_or_schedule=display_path
                 )
             )
     return triggers

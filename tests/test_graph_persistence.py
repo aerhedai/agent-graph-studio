@@ -6,7 +6,9 @@ from backend.api.app import _reactivate_persisted_graphs, app
 from backend.storage import graphs_store
 from backend.triggers import registry as trigger_registry
 
-client = TestClient(app)
+# spec-017: must match tests/conftest.py's TEST_API_KEY (the isolated_api_key
+# fixture sets AGENT_GRAPH_STUDIO_API_KEY to this same literal value).
+client = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
 
 
 def _simple_graph() -> dict:

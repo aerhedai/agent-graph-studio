@@ -4,6 +4,61 @@
   height: 100vh;
 }
 
+/* --- spec-017: minimal unlock gate -------------------------------------- */
+
+.unlock-overlay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: var(--color-canvas);
+}
+
+.unlock-overlay__form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 280px;
+  padding: 24px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.unlock-overlay__form h1 {
+  font-size: 16px;
+  margin-bottom: 4px;
+}
+
+.unlock-overlay__form label {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.unlock-overlay__form input {
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+}
+
+.unlock-overlay__form button {
+  font: inherit;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-accent);
+  background: var(--color-accent);
+  color: white;
+  cursor: pointer;
+}
+
+.unlock-overlay__error {
+  color: var(--status-error);
+  font-size: 12px;
+}
+
 .app__header {
   padding: 8px 16px;
   border-bottom: 1px solid var(--color-border);
@@ -813,6 +868,91 @@
   stroke-width: 2.5;
   stroke-dasharray: 3 5;
   stroke-linecap: round;
+}
+
+/* --- spec-017: execution history panel --- */
+
+.history-panel-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  justify-content: flex-end;
+  z-index: 100;
+}
+
+.history-panel {
+  width: 420px;
+  max-width: 90vw;
+  height: 100vh;
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-border);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.history-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.history-panel__filters {
+  display: flex;
+  gap: 8px;
+}
+
+.history-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.history-panel__empty {
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+
+.history-panel__row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.history-panel__row:hover {
+  border-color: var(--color-border-strong);
+}
+
+.history-panel__row-graph {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-panel__row-trigger {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+}
+
+.history-panel__row-time {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  white-space: nowrap;
 }
 
 /* --- node inspector (config + trace tabs) --- */
