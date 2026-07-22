@@ -15,8 +15,16 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { fetchConnections, fetchNodeTypes, pollRun, submitRun } from "../api/client";
-import type { GraphSpec, NodeTypeInfo, RunStatusResponse } from "../api/types";
+import {
+  activateGraph,
+  deactivateGraph,
+  fetchConnections,
+  fetchNodeTypes,
+  listRuns,
+  pollRun,
+  submitRun,
+} from "../api/client";
+import type { GraphSpec, NodeTypeInfo, RunStatusResponse, TriggerInfo } from "../api/types";
 import { graphSpecToNodesAndEdges, nodesAndEdgesToGraphSpec } from "../graph/serialize";
 import { NodeInspectorPanel } from "../panels/NodeInspectorPanel";
 import {
@@ -35,6 +43,9 @@ import { slotTypesCompatible } from "./typeCompat";
 const nodeTypes = { generic: GenericNode };
 const edgeTypes = { status: StatusEdge };
 const POLL_INTERVAL_MS = 500;
+// Lighter than POLL_INTERVAL_MS -- this is a passive background check for
+// "has a new run appeared for this graph_id", not a foreground wait.
+const WATCH_INTERVAL_MS = 1750;
 
 let idCounter = 0;
 function nextNodeId(typeName: string): string {
@@ -95,10 +106,31 @@ function CanvasInner() {
   const [nodeTypesByName, setNodeTypesByName] = useState<Record<string, NodeTypeInfo>>({});
   const [connectionTypeByName, setConnectionTypeByName] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
+  // spec-009: a fresh id per canvas session -- never persisted, never
+  // embedded in saved/loaded graph JSON (GraphSpec deliberately has no id
+  // field, backend/api/app.py's POST /runs docstring). Lazy useState
+  // initializer so crypto.randomUUID() runs exactly once, on mount, not
+  // every render. Loading a different file mid-session does NOT reset
+  // this -- re-activating under the same id after an edit/load is correct,
+  // idempotent behavior (the activate endpoint already replaces the prior
+  // registration outright).
+  const [graphId] = useState<string>(() => crypto.randomUUID());
+  const [activation, setActivation] = useState<"inactive" | "activating" | "active" | "deactivating">(
+    "inactive",
+  );
+  const [activationError, setActivationError] = useState<string | null>(null);
+  const [triggers, setTriggers] = useState<TriggerInfo[] | null>(null);
   const { screenToFlowPosition } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
   const pollTimeoutRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Dedupe guards shared by handleRun and the watch loop below --
+  // activeRunIdRef is whatever run_id is currently attached/polling;
+  // lastSeenRunIdRef is whatever run_id either path has already reacted to
+  // (stamped before the activeRunIdRef check so a same-tick race between
+  // the two entry points never double-attaches).
+  const activeRunIdRef = useRef<string | null>(null);
+  const lastSeenRunIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     fetchNodeTypes()
@@ -428,20 +460,90 @@ function CanvasInner() {
     [applyRunToNodes, applyRunToEdges],
   );
 
+  // spec-009: the one shared entry point into the live-polling pipeline --
+  // used by both a manual Run click and the watch loop below noticing an
+  // externally-triggered run, so the two are visually indistinguishable.
+  // lastSeenRunIdRef is stamped unconditionally (even on a no-op) so a
+  // same-tick race between the two callers never double-attaches; the
+  // activeRunIdRef check is what actually guards against resetting/
+  // re-polling a run that's already attached.
+  const attachToRun = useCallback(
+    (runId: string) => {
+      lastSeenRunIdRef.current = runId;
+      if (activeRunIdRef.current === runId) return;
+      activeRunIdRef.current = runId;
+      setRun(null);
+      setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, status: "pending", errorMessage: null } })));
+      setEdges((eds) => eds.map((e) => ({ ...e, data: { ...e.data, targetStatus: "pending" } })));
+      if (pollTimeoutRef.current !== null) window.clearTimeout(pollTimeoutRef.current);
+      pollUntilDone(runId);
+    },
+    [pollUntilDone, setNodes, setEdges],
+  );
+
+  // spec-009: while this graph is active, keep checking for a new run
+  // under its graph_id (a real trigger firing, e.g. a Telegram webhook) and
+  // attach to it the moment it appears -- exactly the live rendering a
+  // manual Run click gets, no click required. Cleanup via the effect's own
+  // return covers both deactivation (activation leaves "active") and
+  // unmount.
+  useEffect(() => {
+    if (activation !== "active") return;
+    const id = window.setInterval(() => {
+      listRuns({ graph_id: graphId, limit: 1 })
+        .then((res) => {
+          const latest = res.runs[0];
+          if (latest && latest.run_id !== lastSeenRunIdRef.current) {
+            attachToRun(latest.run_id);
+          }
+        })
+        .catch((e: unknown) => {
+          // Passive background poll -- a transient blip shouldn't flip
+          // activationError on every tick while still genuinely active.
+          console.error("Trigger watch poll failed:", e);
+        });
+    }, WATCH_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [activation, graphId, attachToRun]);
+
   async function handleRun() {
     setIsSubmitting(true);
     setRunError(null);
-    setRun(null);
-    setNodes((nds) => nds.map((n) => ({ ...n, data: { ...n.data, status: "pending", errorMessage: null } })));
-    setEdges((eds) => eds.map((e) => ({ ...e, data: { ...e.data, targetStatus: "pending" } })));
     try {
       const graph = nodesAndEdgesToGraphSpec(nodes, edges);
-      const submitted = await submitRun(graph);
-      pollUntilDone(submitted.run_id);
+      const submitted = await submitRun(graph, graphId);
+      attachToRun(submitted.run_id);
     } catch (e) {
       setRunError(String(e));
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function handleActivate() {
+    setActivation("activating");
+    setActivationError(null);
+    try {
+      const graph = nodesAndEdgesToGraphSpec(nodes, edges);
+      const response = await activateGraph(graphId, graph);
+      setTriggers(response.triggers);
+      setActivation("active");
+    } catch (e) {
+      setActivationError(String(e));
+      setActivation("inactive");
+    }
+  }
+
+  async function handleDeactivate() {
+    setActivation("deactivating");
+    setActivationError(null);
+    try {
+      await deactivateGraph(graphId);
+    } catch (e) {
+      setActivationError(String(e));
+    } finally {
+      setActivation("inactive");
+      setTriggers(null);
     }
   }
 
@@ -523,9 +625,53 @@ function CanvasInner() {
                 e.target.value = "";
               }}
             />
+            <button
+              type="button"
+              className={`run-bar__secondary run-bar__activate-btn${
+                activation === "active" ? " run-bar__activate-btn--active" : ""
+              }`}
+              onClick={() => void (activation === "active" ? handleDeactivate() : handleActivate())}
+              disabled={activation === "activating" || activation === "deactivating"}
+            >
+              {activation === "activating"
+                ? "Activating..."
+                : activation === "deactivating"
+                  ? "Deactivating..."
+                  : activation === "active"
+                    ? "Deactivate"
+                    : "Activate"}
+            </button>
+            {activation === "active" && (
+              // Re-push the current canvas graph without a deactivate round-
+              // trip -- POST /graphs/{id}/activate is already idempotent
+              // server-side (replaces the prior registration outright), so
+              // this reuses handleActivate completely unchanged. Without
+              // this, an edit made after activating (e.g. removing an edge)
+              // silently has no effect until Deactivate+Activate, which is
+              // exactly the confusion that surfaced this gap.
+              <button
+                type="button"
+                className="run-bar__secondary"
+                onClick={() => void handleActivate()}
+                title="Push the current canvas graph to the already-active webhook/schedule"
+              >
+                Update
+              </button>
+            )}
+            {activation === "active" && <span className="run-bar__trigger-badge">● active</span>}
+            {activation === "active" && triggers && triggers.length > 0 && (
+              <span className="run-bar__triggers">
+                {triggers.map((t) => (
+                  <code key={t.node_id} className="run-bar__trigger-chip">
+                    {t.type === "webhook_trigger" ? `POST ${t.endpoint_or_schedule}` : `cron ${t.endpoint_or_schedule}`}
+                  </code>
+                ))}
+              </span>
+            )}
             {run && <span className={`run-bar__status status-${run.status}`}>{run.status}</span>}
             {runError && <span className="run-bar__error">{runError}</span>}
             {loadError && <span className="run-bar__error">{loadError}</span>}
+            {activationError && <span className="run-bar__error">{activationError}</span>}
           </div>
           <div className="canvas-wrapper" onDrop={onDrop} onDragOver={onDragOver}>
             <ReactFlow
