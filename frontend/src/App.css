@@ -100,6 +100,18 @@
   font-size: 12px;
 }
 
+/* --- spec-015: graph name + saved-graph select -------------------------- */
+
+.run-bar__graph-name {
+  font: inherit;
+  width: 140px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
 /* --- spec-009: canvas trigger activation control ----------------------- */
 
 .run-bar__activate-btn--active {

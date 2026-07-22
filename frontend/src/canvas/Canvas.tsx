@@ -17,14 +17,25 @@ import "@xyflow/react/dist/style.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   activateGraph,
+  createGraph,
   deactivateGraph,
   fetchConnections,
   fetchNodeTypes,
+  getGraph,
+  listActiveGraphs,
+  listGraphs,
   listRuns,
   pollRun,
   submitRun,
+  updateGraph,
 } from "../api/client";
-import type { GraphSpec, NodeTypeInfo, RunStatusResponse, TriggerInfo } from "../api/types";
+import type {
+  GraphSpec,
+  GraphSummary,
+  NodeTypeInfo,
+  RunStatusResponse,
+  TriggerInfo,
+} from "../api/types";
 import { graphSpecToNodesAndEdges, nodesAndEdgesToGraphSpec } from "../graph/serialize";
 import { NodeInspectorPanel } from "../panels/NodeInspectorPanel";
 import {
@@ -106,15 +117,19 @@ function CanvasInner() {
   const [nodeTypesByName, setNodeTypesByName] = useState<Record<string, NodeTypeInfo>>({});
   const [connectionTypeByName, setConnectionTypeByName] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
-  // spec-009: a fresh id per canvas session -- never persisted, never
-  // embedded in saved/loaded graph JSON (GraphSpec deliberately has no id
-  // field, backend/api/app.py's POST /runs docstring). Lazy useState
-  // initializer so crypto.randomUUID() runs exactly once, on mount, not
-  // every render. Loading a different file mid-session does NOT reset
-  // this -- re-activating under the same id after an edit/load is correct,
-  // idempotent behavior (the activate endpoint already replaces the prior
-  // registration outright).
-  const [graphId] = useState<string>(() => crypto.randomUUID());
+  // spec-015: a graph's real identity now lives server-side (graphs_store),
+  // not a client-only session UUID (that was spec-009's original
+  // stopgap -- GraphSpec had no server identity anywhere at the time).
+  // `savedGraphId` is null until the graph has been saved at least once
+  // (explicitly via Save, or implicitly the first time Activate is
+  // clicked); once set, it's stable across a reload as long as the same
+  // saved graph is reopened via the Load-by-name UI, unlike the old
+  // fresh-UUID-per-session scheme.
+  const [savedGraphId, setSavedGraphId] = useState<string | null>(null);
+  const [graphName, setGraphName] = useState<string>("Untitled");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedGraphs, setSavedGraphs] = useState<GraphSummary[]>([]);
   const [activation, setActivation] = useState<"inactive" | "activating" | "active" | "deactivating">(
     "inactive",
   );
@@ -154,6 +169,12 @@ function CanvasInner() {
     return () => {
       if (pollTimeoutRef.current !== null) window.clearTimeout(pollTimeoutRef.current);
     };
+  }, []);
+
+  useEffect(() => {
+    listGraphs()
+      .then(setSavedGraphs)
+      .catch((e: unknown) => console.error("Failed to load saved graphs list:", e));
   }, []);
 
   const onDrop = useCallback(
@@ -488,9 +509,9 @@ function CanvasInner() {
   // return covers both deactivation (activation leaves "active") and
   // unmount.
   useEffect(() => {
-    if (activation !== "active") return;
+    if (activation !== "active" || savedGraphId === null) return;
     const id = window.setInterval(() => {
-      listRuns({ graph_id: graphId, limit: 1 })
+      listRuns({ graph_id: savedGraphId, limit: 1 })
         .then((res) => {
           const latest = res.runs[0];
           if (latest && latest.run_id !== lastSeenRunIdRef.current) {
@@ -504,14 +525,14 @@ function CanvasInner() {
         });
     }, WATCH_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [activation, graphId, attachToRun]);
+  }, [activation, savedGraphId, attachToRun]);
 
   async function handleRun() {
     setIsSubmitting(true);
     setRunError(null);
     try {
       const graph = nodesAndEdgesToGraphSpec(nodes, edges);
-      const submitted = await submitRun(graph, graphId);
+      const submitted = await submitRun(graph, savedGraphId ?? undefined);
       attachToRun(submitted.run_id);
     } catch (e) {
       setRunError(String(e));
@@ -520,12 +541,84 @@ function CanvasInner() {
     }
   }
 
+  // spec-015: Save persists to the server, giving the graph a real, stable
+  // id -- create the first time, update (by id) every time after. Returns
+  // the id, since handleActivate needs to auto-save first when the graph
+  // was never explicitly saved (a graph_id is required to activate at all).
+  async function handleSave(): Promise<string> {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const graph = nodesAndEdgesToGraphSpec(nodes, edges);
+      if (savedGraphId === null) {
+        const created = await createGraph(graphName, graph);
+        setSavedGraphId(created.graph_id);
+        return created.graph_id;
+      }
+      await updateGraph(savedGraphId, { name: graphName, spec: graph });
+      return savedGraphId;
+    } catch (e) {
+      setSaveError(String(e));
+      throw e;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function refreshSavedGraphsList() {
+    try {
+      setSavedGraphs(await listGraphs());
+    } catch (e) {
+      setLoadError(String(e));
+    }
+  }
+
+  async function handleLoadFromServer(graphId: string) {
+    setLoadError(null);
+    try {
+      const detail = await getGraph(graphId);
+      const { nodes: loadedNodes, edges: loadedEdges } = await graphSpecToNodesAndEdges(
+        detail.spec,
+        nodeTypesByName,
+      );
+      setNodes(loadedNodes);
+      setEdges(loadedEdges);
+      setSelectedNodeId(null);
+      setRun(null);
+      setRunError(null);
+      setSavedGraphId(detail.graph_id);
+      setGraphName(detail.name);
+      if (pollTimeoutRef.current !== null) window.clearTimeout(pollTimeoutRef.current);
+      window.setTimeout(() => loadedNodes.forEach((n) => updateNodeInternals(n.id)), 0);
+
+      // spec-015: this graph might already be active (activated in a prior
+      // session, or before this reload) -- restore that UI state
+      // immediately rather than showing "Activate" as if it were inactive.
+      if (detail.is_active) {
+        const active = await listActiveGraphs();
+        const match = active.find((a) => a.graph_id === detail.graph_id);
+        setActivation("active");
+        setTriggers(match?.triggers ?? []);
+      } else {
+        setActivation("inactive");
+        setTriggers(null);
+      }
+    } catch (e) {
+      setLoadError(String(e));
+    }
+  }
+
   async function handleActivate() {
     setActivation("activating");
     setActivationError(null);
     try {
       const graph = nodesAndEdgesToGraphSpec(nodes, edges);
-      const response = await activateGraph(graphId, graph);
+      // A graph_id is required to activate at all -- if this graph was
+      // never explicitly saved, auto-save it once now so activation always
+      // operates on a stable, persisted id (the actual fix for "the
+      // webhook path changes every time I reload the canvas").
+      const activeGraphId = savedGraphId ?? (await handleSave());
+      const response = await activateGraph(activeGraphId, graph);
       setTriggers(response.triggers);
       setActivation("active");
     } catch (e) {
@@ -535,10 +628,11 @@ function CanvasInner() {
   }
 
   async function handleDeactivate() {
+    if (savedGraphId === null) return; // can't have activated without one
     setActivation("deactivating");
     setActivationError(null);
     try {
-      await deactivateGraph(graphId);
+      await deactivateGraph(savedGraphId);
     } catch (e) {
       setActivationError(String(e));
     } finally {
@@ -547,13 +641,15 @@ function CanvasInner() {
     }
   }
 
-  // --- save / load (spec-005 §4/§6: canvas <-> the exact CLI graph JSON) --
-  function handleSave() {
+  // --- export / import (spec-005 §4/§6: canvas <-> a local CLI graph.json,
+  // kept as a clearly separate action from the server-backed Save/Load
+  // above per spec-015 §7's resolved open question) --------------------
+  function handleExport() {
     const graph = nodesAndEdgesToGraphSpec(nodes, edges);
     downloadJson(graph, "graph.json");
   }
 
-  async function handleLoadFile(file: File) {
+  async function handleImportFile(file: File) {
     setLoadError(null);
     try {
       const text = await file.text();
@@ -567,6 +663,14 @@ function CanvasInner() {
       setSelectedNodeId(null);
       setRun(null);
       setRunError(null);
+      // Importing a local file is a distinct graph from whatever was
+      // previously saved/loaded -- it has no server identity until
+      // explicitly Saved, and whatever activation state was showing
+      // belonged to the *previous* graph, not this newly-imported one.
+      setSavedGraphId(null);
+      setGraphName("Untitled");
+      setActivation("inactive");
+      setTriggers(null);
       if (pollTimeoutRef.current !== null) window.clearTimeout(pollTimeoutRef.current);
       // Give freshly-loaded dynamic-schema nodes' handles (resolved above,
       // present from their very first render) a measurement pass too --
@@ -604,15 +708,51 @@ function CanvasInner() {
             <button type="button" onClick={() => void handleRun()} disabled={isSubmitting || run?.status === "running"}>
               {run?.status === "running" ? "Running..." : "Run"}
             </button>
-            <button type="button" onClick={handleSave} className="run-bar__secondary">
-              Save
+            <input
+              type="text"
+              className="run-bar__graph-name"
+              value={graphName}
+              onChange={(e) => setGraphName(e.target.value)}
+              placeholder="Graph name"
+              title="This graph's name -- used when Saved to the server"
+            />
+            <button
+              type="button"
+              className="run-bar__secondary"
+              onClick={() => void handleSave().then(() => refreshSavedGraphsList())}
+              disabled={saving}
+            >
+              {saving ? "Saving..." : "Save"}
+            </button>
+            <span className="select-wrap">
+              <select
+                value=""
+                onFocus={() => void refreshSavedGraphsList()}
+                onChange={(e) => {
+                  if (e.target.value) void handleLoadFromServer(e.target.value);
+                  e.target.value = "";
+                }}
+              >
+                <option value="" disabled>
+                  Load saved graph...
+                </option>
+                {savedGraphs.map((g) => (
+                  <option key={g.graph_id} value={g.graph_id}>
+                    {g.name}
+                    {g.is_active ? " (active)" : ""}
+                  </option>
+                ))}
+              </select>
+            </span>
+            <button type="button" onClick={handleExport} className="run-bar__secondary">
+              Export
             </button>
             <button
               type="button"
               className="run-bar__secondary"
               onClick={() => fileInputRef.current?.click()}
             >
-              Load
+              Import
             </button>
             <input
               ref={fileInputRef}
@@ -621,7 +761,7 @@ function CanvasInner() {
               style={{ display: "none" }}
               onChange={(e) => {
                 const file = e.target.files?.[0];
-                if (file) void handleLoadFile(file);
+                if (file) void handleImportFile(file);
                 e.target.value = "";
               }}
             />
@@ -671,6 +811,7 @@ function CanvasInner() {
             {run && <span className={`run-bar__status status-${run.status}`}>{run.status}</span>}
             {runError && <span className="run-bar__error">{runError}</span>}
             {loadError && <span className="run-bar__error">{loadError}</span>}
+            {saveError && <span className="run-bar__error">{saveError}</span>}
             {activationError && <span className="run-bar__error">{activationError}</span>}
           </div>
           <div className="canvas-wrapper" onDrop={onDrop} onDragOver={onDragOver}>
