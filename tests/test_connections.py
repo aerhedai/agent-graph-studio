@@ -58,11 +58,23 @@ def test_delete_unknown_connection_returns_false():
     assert delete_connection("never-existed") is False
 
 
-def test_store_is_a_plain_json_file_never_inline_in_graph_json():
-    add_connection("persisted", "anthropic", {"api_key": "sk-test"})
+def test_store_is_a_real_file_never_inline_in_graph_json():
+    """spec-017: the file is a real, separate file on disk (not inline in
+    graph JSON) -- but as of spec-017, it's a Fernet-encrypted token, not
+    plain-readable JSON. The secret must not appear anywhere in the raw
+    bytes; the public get_connection() API is still how you read it back."""
+    add_connection("persisted", "anthropic", {"api_key": "sk-test-secret-value"})
     path = connections_path()
-    data = json.loads(path.read_text())
-    assert data["connections"][0]["name"] == "persisted"
+    raw = path.read_bytes()
+
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(raw)
+    assert b"sk-test-secret-value" not in raw
+    assert b"persisted" not in raw
+
+    fetched = get_connection("persisted")
+    assert fetched is not None
+    assert fetched.config == {"api_key": "sk-test-secret-value"}
 
 
 # --- ConnectionRegistry (mirrors NodeRegistry's own duplicate-type test) --

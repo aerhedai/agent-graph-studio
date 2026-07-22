@@ -6,7 +6,9 @@ from fastapi.testclient import TestClient
 
 from backend.api.app import app
 
-client = TestClient(app)
+# spec-017: must match tests/conftest.py's TEST_API_KEY (the isolated_api_key
+# fixture sets AGENT_GRAPH_STUDIO_API_KEY to this same literal value).
+client = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
 
 
 def test_node_types_lists_every_registered_type_with_zero_hardcoding():

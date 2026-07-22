@@ -9,7 +9,9 @@ from backend.api.app import app
 from backend.triggers import registry as trigger_registry
 from backend.triggers import scheduler as trigger_scheduler
 
-client = TestClient(app)
+# spec-017: must match tests/conftest.py's TEST_API_KEY (the isolated_api_key
+# fixture sets AGENT_GRAPH_STUDIO_API_KEY to this same literal value).
+client = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
 
 
 def _schedule_graph(cron: str = "*/5 * * * *") -> dict:
@@ -90,7 +92,10 @@ def test_activate_webhook_trigger_registers_a_real_route_and_fires_with_real_pay
         activate = client.post(f"/graphs/{graph_id}/activate", json=_webhook_graph())
         assert activate.status_code == 200
         endpoint = activate.json()["triggers"][0]["endpoint_or_schedule"]
-        assert endpoint == f"/webhooks/{graph_id}/trigger"
+        # spec-017: the reported endpoint now carries the API key as a
+        # query param, ready to paste directly into an external webhook
+        # config -- the bare route path is still what's actually registered.
+        assert endpoint == f"/webhooks/{graph_id}/trigger?key=test-api-key"
 
         fire = client.post(endpoint, json={"name": "spec-009"})
         assert fire.status_code == 200

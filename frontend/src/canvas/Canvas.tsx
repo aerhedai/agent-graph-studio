@@ -21,12 +21,15 @@ import {
   deactivateGraph,
   fetchConnections,
   fetchNodeTypes,
+  getApiKey,
   getGraph,
   listActiveGraphs,
   listGraphs,
   listRuns,
   pollRun,
+  setApiKey,
   submitRun,
+  UnauthorizedError,
   updateGraph,
 } from "../api/client";
 import type {
@@ -37,6 +40,7 @@ import type {
   TriggerInfo,
 } from "../api/types";
 import { graphSpecToNodesAndEdges, nodesAndEdgesToGraphSpec } from "../graph/serialize";
+import { HistoryPanel } from "../panels/HistoryPanel";
 import { NodeInspectorPanel } from "../panels/NodeInspectorPanel";
 import {
   ConnectionTypeContext,
@@ -117,6 +121,12 @@ function CanvasInner() {
   const [nodeTypesByName, setNodeTypesByName] = useState<Record<string, NodeTypeInfo>>({});
   const [connectionTypeByName, setConnectionTypeByName] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
+  // spec-017: gate the whole canvas behind a minimal unlock prompt until a
+  // credential is present -- starts true if nothing's stored yet; also
+  // flips back to true if any request comes back 401 (wrong/revoked key).
+  const [needsUnlock, setNeedsUnlock] = useState<boolean>(() => getApiKey() === null);
+  const [unlockDraft, setUnlockDraft] = useState("");
+  const [unlockError, setUnlockError] = useState<string | null>(null);
   // spec-015: a graph's real identity now lives server-side (graphs_store),
   // not a client-only session UUID (that was spec-009's original
   // stopgap -- GraphSpec had no server identity anywhere at the time).
@@ -134,6 +144,7 @@ function CanvasInner() {
     "inactive",
   );
   const [activationError, setActivationError] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
   const [triggers, setTriggers] = useState<TriggerInfo[] | null>(null);
   const { screenToFlowPosition } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
@@ -148,12 +159,21 @@ function CanvasInner() {
   const lastSeenRunIdRef = useRef<string | null>(null);
 
   useEffect(() => {
+    if (needsUnlock) return;
     fetchNodeTypes()
       .then((types) => setNodeTypesByName(Object.fromEntries(types.map((t) => [t.type, t]))))
-      .catch((e: unknown) => setLoadError(String(e)));
-  }, []);
+      .catch((e: unknown) => {
+        if (e instanceof UnauthorizedError) {
+          setUnlockError("Invalid API key");
+          setNeedsUnlock(true);
+        } else {
+          setLoadError(String(e));
+        }
+      });
+  }, [needsUnlock]);
 
   useEffect(() => {
+    if (needsUnlock) return;
     // spec-013 §5: a node's badge shows its connection's *type* (e.g.
     // "ollama"), not just its name -- presentation-only lookup, so a
     // fetch failure here shouldn't block the canvas from working; nodes
@@ -162,8 +182,15 @@ function CanvasInner() {
       .then((connections) =>
         setConnectionTypeByName(Object.fromEntries(connections.map((c) => [c.name, c.type]))),
       )
-      .catch((e: unknown) => console.error("Failed to load connections for node badges:", e));
-  }, []);
+      .catch((e: unknown) => {
+        if (e instanceof UnauthorizedError) {
+          setUnlockError("Invalid API key");
+          setNeedsUnlock(true);
+        } else {
+          console.error("Failed to load connections for node badges:", e);
+        }
+      });
+  }, [needsUnlock]);
 
   useEffect(() => {
     return () => {
@@ -172,10 +199,18 @@ function CanvasInner() {
   }, []);
 
   useEffect(() => {
+    if (needsUnlock) return;
     listGraphs()
       .then(setSavedGraphs)
-      .catch((e: unknown) => console.error("Failed to load saved graphs list:", e));
-  }, []);
+      .catch((e: unknown) => {
+        if (e instanceof UnauthorizedError) {
+          setUnlockError("Invalid API key");
+          setNeedsUnlock(true);
+        } else {
+          console.error("Failed to load saved graphs list:", e);
+        }
+      });
+  }, [needsUnlock]);
 
   const onDrop = useCallback(
     (event: React.DragEvent) => {
@@ -502,6 +537,25 @@ function CanvasInner() {
     [pollUntilDone, setNodes, setEdges],
   );
 
+  // spec-017: load a past run (selected in HistoryPanel) into the exact
+  // same `run` state the live-run view renders from -- a one-shot fetch,
+  // not the polling loop (a historical run is already finished). Stops
+  // any in-flight live poll first so it can't clobber this a moment later.
+  async function handleSelectHistoricalRun(runId: string) {
+    if (pollTimeoutRef.current !== null) window.clearTimeout(pollTimeoutRef.current);
+    activeRunIdRef.current = runId;
+    lastSeenRunIdRef.current = runId;
+    setShowHistory(false);
+    try {
+      const status = await pollRun(runId);
+      setRun(status);
+      applyRunToNodes(status);
+      applyRunToEdges(status);
+    } catch (e) {
+      setRunError(String(e));
+    }
+  }
+
   // spec-009: while this graph is active, keep checking for a new run
   // under its graph_id (a real trigger firing, e.g. a Telegram webhook) and
   // attach to it the moment it appears -- exactly the live rendering a
@@ -682,6 +736,39 @@ function CanvasInner() {
     }
   }
 
+  function handleUnlockSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!unlockDraft.trim()) return;
+    setApiKey(unlockDraft.trim());
+    setUnlockDraft("");
+    setUnlockError(null);
+    setNeedsUnlock(false);
+  }
+
+  // spec-017: a minimal login gate -- the whole canvas is meaningless
+  // without a credential, so this is an early return, not a modal layered
+  // over a half-loaded app.
+  if (needsUnlock) {
+    return (
+      <div className="unlock-overlay">
+        <form className="unlock-overlay__form" onSubmit={handleUnlockSubmit}>
+          <h1>Agent Graph Studio</h1>
+          <label htmlFor="unlock-key">API key</label>
+          <input
+            id="unlock-key"
+            type="password"
+            autoFocus
+            value={unlockDraft}
+            onChange={(e) => setUnlockDraft(e.target.value)}
+            placeholder="Enter the API key"
+          />
+          <button type="submit">Unlock</button>
+          {unlockError && <div className="unlock-overlay__error">{unlockError}</div>}
+        </form>
+      </div>
+    );
+  }
+
   const selectedNode = nodes.find((n) => n.id === selectedNodeId) ?? null;
   const selectedTraceRecord = run && selectedNodeId ? findTraceRecord(run.trace, selectedNodeId) : null;
 
@@ -813,6 +900,13 @@ function CanvasInner() {
             {loadError && <span className="run-bar__error">{loadError}</span>}
             {saveError && <span className="run-bar__error">{saveError}</span>}
             {activationError && <span className="run-bar__error">{activationError}</span>}
+            <button
+              type="button"
+              className="run-bar__secondary run-bar__history-btn"
+              onClick={() => setShowHistory(true)}
+            >
+              History
+            </button>
           </div>
           <div className="canvas-wrapper" onDrop={onDrop} onDragOver={onDragOver}>
             <ReactFlow
@@ -859,6 +953,9 @@ function CanvasInner() {
           }}
         />
       </div>
+      {showHistory && (
+        <HistoryPanel onClose={() => setShowHistory(false)} onSelectRun={(id) => void handleSelectHistoricalRun(id)} />
+      )}
       </GroupActionsContext.Provider>
     </ConnectionTypeContext.Provider>
   );

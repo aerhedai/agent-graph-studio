@@ -6,7 +6,9 @@ from backend.api.app import app
 from backend.connections.store import add_connection
 from backend.llm.client import LLMResponse
 
-client = TestClient(app)
+# spec-017: must match tests/conftest.py's TEST_API_KEY (the isolated_api_key
+# fixture sets AGENT_GRAPH_STUDIO_API_KEY to this same literal value).
+client = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
 
 
 def test_connection_types_lists_anthropic_and_ollama_with_zero_hardcoding():

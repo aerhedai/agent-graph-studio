@@ -15,6 +15,7 @@ source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "apscheduler" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "mcp" },
@@ -37,6 +38,7 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.40" },
     { name = "apscheduler", specifier = ">=3.11.3" },
+    { name = "cryptography", specifier = ">=41" },
     { name = "fastapi", specifier = ">=0.139.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "mcp", specifier = ">=1.28.1" },

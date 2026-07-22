@@ -1,12 +1,29 @@
-# Deployment (SPEC-016)
+# Deployment (SPEC-016, SPEC-017)
 
 Docker/Docker Compose packaging so this app runs as a persistent, always-on service — the same shape n8n itself ships in — instead of two manually-started dev processes on a laptop. This doesn't pick a host for you; it makes the app deployable to any of them (a VPS, Railway, Fly.io, a home server) via a standard container interface.
+
+## Required for ANY run, Docker or plain `uv run` (SPEC-017)
+
+Two secrets are required at startup — the backend refuses to start without them, deliberately (no silent fallback):
+
+- `AGENT_GRAPH_STUDIO_ENCRYPTION_KEY` — a real Fernet key encrypting connection secrets (bot tokens, API keys) at rest. Generate one: `uv run python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+- `AGENT_GRAPH_STUDIO_API_KEY` — the one shared credential every API request needs (`Authorization: Bearer <key>`, or `?key=<key>` for webhook URLs external callers hit directly). Any string you choose.
+
+For local development (not Docker), export both before `uv run uvicorn backend.api.app:app --reload`:
+```bash
+export AGENT_GRAPH_STUDIO_ENCRYPTION_KEY="<generated above>"
+export AGENT_GRAPH_STUDIO_API_KEY="<your choice>"
+```
+The canvas will prompt for the API key on first load and remember it (`localStorage`) across reloads. An existing plaintext `connections.json` from before this was added is migrated to encrypted storage automatically, the first time it's read — no manual step, no data loss.
 
 ## Build and run
 
 ```bash
+export AGENT_GRAPH_STUDIO_ENCRYPTION_KEY="<generated above>"
+export AGENT_GRAPH_STUDIO_API_KEY="<your choice>"
 docker compose up --build
 ```
+(Or put both in a `.env` file next to `docker-compose.yml` — Compose reads it automatically. Omitting either fails fast with a clear message before anything starts building.)
 
 - Frontend (the app itself): `http://localhost:8081`
 - Backend API directly: `http://localhost:8000`
@@ -28,6 +45,8 @@ To back up: the volume is a plain directory of files (one JSON file, two SQLite 
 | `AGENT_GRAPH_STUDIO_CONNECTIONS_PATH` | `docker-compose.yml` | Where the connections store (bot tokens, API keys, etc.) lives. Points into the mounted volume. |
 | `AGENT_GRAPH_STUDIO_RUNS_DB_PATH` | `docker-compose.yml` | Where run history (SPEC-010) lives. Points into the mounted volume. |
 | `AGENT_GRAPH_STUDIO_GRAPHS_DB_PATH` | `docker-compose.yml` | Where saved graphs + trigger activation state (SPEC-015) live. Points into the mounted volume. |
+| `AGENT_GRAPH_STUDIO_ENCRYPTION_KEY` | **you, required** | Fernet key encrypting connection secrets at rest (SPEC-017). No default — the backend refuses to start without it. |
+| `AGENT_GRAPH_STUDIO_API_KEY` | **you, required** | The one shared credential every API request (and webhook URL, via `?key=`) needs (SPEC-017). No default — the backend refuses to start without it. |
 | `VITE_API_BASE` | `frontend/Dockerfile` build ARG | Baked into the frontend at **build time** (Vite's normal env-var mechanism), not read at runtime. Left empty by default so API calls are relative to whatever origin nginx serves the app from — this is what makes the same-origin reverse-proxy above work with zero frontend code changes. |
 
 **A real limitation, not an oversight**: because `VITE_API_BASE` is build-time, changing where the frontend expects its backend (e.g. a different public URL) requires rebuilding the frontend image, not just flipping an environment variable at runtime. If this becomes painful in practice, the natural fix is a small runtime-config shim (nginx `envsubst`-templating a tiny `config.js` at container start) — deliberately not built here, since the default (empty, same-origin) setup doesn't need it and this project's convention is not to build speculative flexibility before it's actually needed.
