@@ -1,9 +1,11 @@
 import type {
+  ActivateGraphResponse,
   ConnectionInfo,
   ConnectionTypeInfo,
   GraphSpec,
   NodeTypeInfo,
   ResolveSlotsResponse,
+  RunListResponse,
   RunStatusResponse,
   RunSubmitResponse,
   TestConnectionResponse,
@@ -39,8 +41,13 @@ export function resolveSlots(
   });
 }
 
-export function submitRun(graph: GraphSpec): Promise<RunSubmitResponse> {
-  return request<RunSubmitResponse>("/runs", {
+// `graphId` is optional and caller-chosen (backend/api/app.py's POST /runs
+// docstring, spec-010 §8) -- omitted for an ordinary manual run, passed by
+// Canvas.tsx so a Run-button submission and a trigger-fired run both land
+// under the same graph_id for the watch poll (listRuns) to find uniformly.
+export function submitRun(graph: GraphSpec, graphId?: string): Promise<RunSubmitResponse> {
+  const query = graphId ? `?graph_id=${encodeURIComponent(graphId)}` : "";
+  return request<RunSubmitResponse>(`/runs${query}`, {
     method: "POST",
     body: JSON.stringify(graph),
   });
@@ -48,6 +55,30 @@ export function submitRun(graph: GraphSpec): Promise<RunSubmitResponse> {
 
 export function pollRun(runId: string): Promise<RunStatusResponse> {
   return request<RunStatusResponse>(`/runs/${encodeURIComponent(runId)}`);
+}
+
+// --- spec-009: trigger activation --------------------------------------
+
+export function activateGraph(graphId: string, graph: GraphSpec): Promise<ActivateGraphResponse> {
+  return request<ActivateGraphResponse>(`/graphs/${encodeURIComponent(graphId)}/activate`, {
+    method: "POST",
+    body: JSON.stringify(graph),
+  });
+}
+
+export function deactivateGraph(graphId: string): Promise<{ status: string }> {
+  return request<{ status: string }>(`/graphs/${encodeURIComponent(graphId)}/deactivate`, {
+    method: "POST",
+  });
+}
+
+// --- spec-010: run history (Canvas.tsx's watch poll) --------------------
+
+export function listRuns(params: { graph_id?: string; limit?: number }): Promise<RunListResponse> {
+  const qs = new URLSearchParams();
+  if (params.graph_id) qs.set("graph_id", params.graph_id);
+  if (params.limit !== undefined) qs.set("limit", String(params.limit));
+  return request<RunListResponse>(`/runs?${qs.toString()}`);
 }
 
 // --- spec-006: named connection profiles -----------------------------

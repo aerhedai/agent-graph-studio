@@ -100,6 +100,41 @@
   font-size: 12px;
 }
 
+/* --- spec-009: canvas trigger activation control ----------------------- */
+
+.run-bar__activate-btn--active {
+  background: transparent;
+  border-color: var(--status-running);
+  color: var(--status-running);
+}
+
+.run-bar__trigger-badge {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--status-running);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  animation: group-row-pulse 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.run-bar__triggers {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.run-bar__trigger-chip {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--status-running) 12%, var(--color-surface));
+  color: var(--color-text-muted);
+  border: 1px solid color-mix(in srgb, var(--status-running) 30%, transparent);
+}
+
 /* --- spec-013: palette. Categorized collapsible accordions (driven
    entirely by each type's real `category` field, never a hardcoded
    section list) plus a search/filter box, replacing the old flat list. --- */

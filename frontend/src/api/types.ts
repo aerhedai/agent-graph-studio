@@ -126,3 +126,35 @@ export interface TestConnectionResponse {
   success: boolean;
   message: string;
 }
+
+// spec-009: trigger activation, mirroring backend/api/schemas.py exactly.
+
+export interface TriggerInfo {
+  node_id: string;
+  type: "schedule_trigger" | "webhook_trigger";
+  endpoint_or_schedule: string;
+}
+
+export interface ActivateGraphResponse {
+  status: string;
+  triggers: TriggerInfo[];
+}
+
+// spec-010: run history, used by the canvas's background "detect a new run
+// for this graph_id" watch poll (Canvas.tsx's watch useEffect).
+
+export interface RunSummary {
+  run_id: string;
+  graph_id: string | null;
+  status: string;
+  trigger_source: string;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface RunListResponse {
+  runs: RunSummary[];
+  total: number;
+  limit: number;
+  offset: number;
+}
