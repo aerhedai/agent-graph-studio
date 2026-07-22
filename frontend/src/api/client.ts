@@ -1,8 +1,11 @@
 import type {
   ActivateGraphResponse,
+  ActiveGraphInfo,
   ConnectionInfo,
   ConnectionTypeInfo,
+  GraphDetail,
   GraphSpec,
+  GraphSummary,
   NodeTypeInfo,
   ResolveSlotsResponse,
   RunListResponse,
@@ -72,6 +75,12 @@ export function deactivateGraph(graphId: string): Promise<{ status: string }> {
   });
 }
 
+// spec-015: used to check whether a just-reopened saved graph is already
+// active, so the canvas can restore that UI state immediately.
+export function listActiveGraphs(): Promise<ActiveGraphInfo[]> {
+  return request<ActiveGraphInfo[]>("/graphs/active");
+}
+
 // --- spec-010: run history (Canvas.tsx's watch poll) --------------------
 
 export function listRuns(params: { graph_id?: string; limit?: number }): Promise<RunListResponse> {
@@ -125,5 +134,41 @@ export async function deleteConnection(name: string): Promise<void> {
   });
   if (!response.ok) {
     throw new Error(`DELETE /connections/${name} failed (${response.status})`);
+  }
+}
+
+// --- spec-015: saved graphs, real server-side graph identity -----------
+
+export function createGraph(name: string, spec: GraphSpec): Promise<GraphDetail> {
+  return request<GraphDetail>("/graphs", {
+    method: "POST",
+    body: JSON.stringify({ name, spec }),
+  });
+}
+
+export function listGraphs(): Promise<GraphSummary[]> {
+  return request<GraphSummary[]>("/graphs");
+}
+
+export function getGraph(graphId: string): Promise<GraphDetail> {
+  return request<GraphDetail>(`/graphs/${encodeURIComponent(graphId)}`);
+}
+
+export function updateGraph(
+  graphId: string,
+  update: { name?: string; spec?: GraphSpec },
+): Promise<GraphDetail> {
+  return request<GraphDetail>(`/graphs/${encodeURIComponent(graphId)}`, {
+    method: "PUT",
+    body: JSON.stringify(update),
+  });
+}
+
+export async function deleteGraph(graphId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/graphs/${encodeURIComponent(graphId)}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw new Error(`DELETE /graphs/${graphId} failed (${response.status})`);
   }
 }

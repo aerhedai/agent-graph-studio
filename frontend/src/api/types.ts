@@ -127,6 +127,23 @@ export interface TestConnectionResponse {
   message: string;
 }
 
+// spec-015: saved graphs, mirroring backend/api/schemas.py's
+// GraphSummary/GraphDetail exactly.
+
+export interface GraphSummary {
+  graph_id: string;
+  name: string;
+  is_active: boolean;
+  updated_at: string;
+}
+
+export interface GraphDetail {
+  graph_id: string;
+  name: string;
+  spec: GraphSpec;
+  is_active: boolean;
+}
+
 // spec-009: trigger activation, mirroring backend/api/schemas.py exactly.
 
 export interface TriggerInfo {
@@ -137,6 +154,14 @@ export interface TriggerInfo {
 
 export interface ActivateGraphResponse {
   status: string;
+  triggers: TriggerInfo[];
+}
+
+// spec-015: used when reopening a saved graph to know if it's already
+// active (so the trigger chip/badge reflects that immediately, not just
+// after the user clicks Activate again).
+export interface ActiveGraphInfo {
+  graph_id: string;
   triggers: TriggerInfo[];
 }
 

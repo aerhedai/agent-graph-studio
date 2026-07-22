@@ -40,6 +40,14 @@ def isolated_runs_db(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_GRAPH_STUDIO_RUNS_DB_PATH", str(tmp_path / "runs.db"))
 
 
+@pytest.fixture(autouse=True)
+def isolated_graphs_db(tmp_path, monkeypatch):
+    """Every test gets its own empty, throwaway graphs database -- no test
+    may ever read or write the real ~/.agent-graph-studio/graphs.db
+    (spec-015). Mirrors isolated_runs_db above exactly."""
+    monkeypatch.setenv("AGENT_GRAPH_STUDIO_GRAPHS_DB_PATH", str(tmp_path / "graphs.db"))
+
+
 @pytest.fixture
 def registered_test_connection():
     """Registers a connection named "test-connection" in the isolated store

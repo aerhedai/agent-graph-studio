@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from backend.execution.trace import TraceRecord
+from backend.schema.models import GraphSpec
 
 
 class SlotInfo(BaseModel):
@@ -175,3 +176,31 @@ class ActivateGraphResponse(BaseModel):
 class ActiveGraphInfo(BaseModel):
     graph_id: str
     triggers: list[TriggerInfo]
+
+
+# spec-015: saved graphs, giving GraphSpec a real server-side identity for
+# the first time -- see backend/storage/graphs_store.py's module docstring.
+
+
+class CreateGraphRequest(BaseModel):
+    name: str
+    spec: GraphSpec
+
+
+class UpdateGraphRequest(BaseModel):
+    name: str | None = None
+    spec: GraphSpec | None = None
+
+
+class GraphSummary(BaseModel):
+    graph_id: str
+    name: str
+    is_active: bool
+    updated_at: str
+
+
+class GraphDetail(BaseModel):
+    graph_id: str
+    name: str
+    spec: GraphSpec
+    is_active: bool
