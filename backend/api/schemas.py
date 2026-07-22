@@ -204,3 +204,20 @@ class GraphDetail(BaseModel):
     name: str
     spec: GraphSpec
     is_active: bool
+
+
+# spec-018: the one app-level setting needed to auto-register external
+# webhooks (Telegram) -- see backend/storage/settings_store.py.
+
+
+class SettingsResponse(BaseModel):
+    public_base_url: str | None
+
+
+class UpdateSettingsRequest(BaseModel):
+    public_base_url: str
+
+
+class UpdateSettingsResponse(BaseModel):
+    public_base_url: str
+    warning: str | None = None

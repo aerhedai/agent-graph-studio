@@ -144,6 +144,18 @@ export interface GraphDetail {
   is_active: boolean;
 }
 
+// spec-018: the one app-level setting needed to auto-register external
+// webhooks (Telegram).
+
+export interface SettingsResponse {
+  public_base_url: string | null;
+}
+
+export interface UpdateSettingsResponse {
+  public_base_url: string;
+  warning: string | null;
+}
+
 // spec-009: trigger activation, mirroring backend/api/schemas.py exactly.
 
 export interface TriggerInfo {

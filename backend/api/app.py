@@ -18,6 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import urllib.error
+import urllib.parse
+import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -45,12 +48,15 @@ from backend.api.schemas import (
     RunStatusResponse,
     RunSubmitResponse,
     RunSummary,
+    SettingsResponse,
     SlotInfo,
     SubNodeSlotInfo,
     TestConnectionRequest,
     TestConnectionResponse,
     TriggerInfo,
     UpdateGraphRequest,
+    UpdateSettingsRequest,
+    UpdateSettingsResponse,
 )
 from backend.connections.base import default_connection_registry
 from backend.connections.errors import ConnectionNotFoundError, DuplicateConnectionError
@@ -64,7 +70,7 @@ from backend.connections.store import (
 )
 from backend.registry.base import default_registry, effective_inputs, effective_outputs
 from backend.schema.models import GraphSpec, NodeSpec
-from backend.storage import graphs_store, runs_store
+from backend.storage import graphs_store, runs_store, settings_store
 from backend.triggers import registry as trigger_registry
 from backend.triggers import runner as trigger_runner
 from backend.triggers import scheduler as trigger_scheduler
@@ -437,6 +443,36 @@ def clear_connection_vectors(name: str) -> None:
     client.clear()
 
 
+# spec-018: the one app-level setting needed to auto-register external
+# webhooks (Telegram's setWebhook/deleteWebhook) -- see
+# backend/storage/settings_store.py's module docstring for why this is a
+# separate plain (unencrypted) store, not a *_connection field or a
+# per-graph setting.
+
+
+@app.get("/settings", response_model=SettingsResponse)
+def get_settings() -> SettingsResponse:
+    return SettingsResponse(public_base_url=settings_store.get_public_base_url())
+
+
+@app.put("/settings", response_model=UpdateSettingsResponse)
+def update_settings(request: UpdateSettingsRequest) -> UpdateSettingsResponse:
+    """Spec-018 §6's resolved open question: a lightweight, non-blocking
+    reachability check against the new value's /health (SPEC-017) --
+    surfaced as a warning, never a hard block, since a URL can be correct
+    but momentarily unreachable (e.g. a tunnel not yet started)."""
+    url = request.public_base_url.rstrip("/")
+    settings_store.set_public_base_url(url)
+    warning: str | None = None
+    try:
+        with urllib.request.urlopen(f"{url}/health", timeout=5) as resp:
+            if resp.status != 200:
+                warning = f"{url}/health responded with status {resp.status}"
+    except Exception as e:
+        warning = f"Could not reach {url}/health: {e}"
+    return UpdateSettingsResponse(public_base_url=url, warning=warning)
+
+
 @app.get("/runs", response_model=RunListResponse)
 def list_runs(
     graph_id: str | None = None,
@@ -569,6 +605,114 @@ def _deactivate(graph_id: str) -> None:
     trigger_registry.clear_active(graph_id)
 
 
+# spec-018: auto-registering Telegram's webhook on Activate/Deactivate --
+# plain graph-edge traversal, no engine involvement at all.
+
+
+def _telegram_adapters_for_graph(graph: GraphSpec) -> list[tuple[NodeSpec, NodeSpec]]:
+    """Every (webhook_trigger, telegram_adapter) pair in the graph. Most
+    graphs (a generic_adapter, or no webhook_trigger at all) yield an empty
+    list -- this is a no-op for them, never touched."""
+    nodes_by_id = {n.id: n for n in graph.nodes}
+    pairs: list[tuple[NodeSpec, NodeSpec]] = []
+    for node in graph.nodes:
+        if node.type != "webhook_trigger":
+            continue
+        for edge in graph.edges:
+            if edge.kind == "sub_node" and edge.slot == "trigger_adapter" and edge.to.node == node.id:
+                source = nodes_by_id.get(edge.from_.node)
+                if source is not None and source.type == "telegram_adapter":
+                    pairs.append((node, source))
+    return pairs
+
+
+def _call_telegram_api(token: str, method: str, params: dict[str, str]) -> dict[str, Any]:
+    """Plain urllib -- this codebase's established convention for outbound
+    HTTP calls (see backend/connections/ollama_connection.py), not httpx
+    (a transitive dependency only, never used directly elsewhere here)."""
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    if params:
+        url = f"{url}?{urllib.parse.urlencode(params)}"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            body = json.loads(resp.read())
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Telegram API call to '{method}' failed: {e}") from e
+    if not body.get("ok"):
+        raise RuntimeError(f"Telegram API '{method}' rejected the request: {body.get('description', body)}")
+    return body
+
+
+def _sync_telegram_webhooks_on_activate(
+    graph_id: str,
+    graph: GraphSpec,
+    triggers: list[trigger_registry.TriggerRecord],
+) -> None:
+    """Called after _register_triggers succeeds. A failure here rolls back
+    the whole activation (matching the existing invalid-cron-expression
+    precedent) -- spec-018 §4's resolved decision: Activate must not report
+    success while the actual external wiring silently didn't happen."""
+    pairs = _telegram_adapters_for_graph(graph)
+    if not pairs:
+        return
+
+    public_base_url = settings_store.get_public_base_url()
+    if not public_base_url:
+        raise HTTPException(
+            status_code=422,
+            detail="This graph has a telegram_adapter trigger, but no public base URL is "
+            "configured yet -- set one first (see Settings) before activating.",
+        )
+
+    try:
+        resolved_connections = resolve_connections(graph)
+    except ConnectionNotFoundError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    trigger_by_node_id = {t.node_id: t for t in triggers}
+    for webhook_node, adapter_node in pairs:
+        connection_name = adapter_node.config.get("bot_token_connection")
+        token = resolved_connections.get(connection_name)
+        if not isinstance(token, str):
+            raise HTTPException(
+                status_code=422,
+                detail=f"telegram_adapter '{adapter_node.id}' references unresolved "
+                f"connection {connection_name!r}",
+            )
+        # The reported endpoint already carries `?key=...` (SPEC-017) --
+        # the exact same URL the trigger chip shows, immediately usable.
+        full_url = f"{public_base_url}{trigger_by_node_id[webhook_node.id].endpoint_or_schedule}"
+        try:
+            _call_telegram_api(token, "setWebhook", {"url": full_url})
+        except RuntimeError as e:
+            raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+def _sync_telegram_webhooks_on_deactivate(graph_id: str, graph: GraphSpec) -> None:
+    """Best-effort, unlike activate's fail-closed behavior -- deactivation's
+    primary job (removing the local route/registration) must still succeed
+    even if Telegram's own API is briefly unreachable; a stray webhook
+    Telegram will 404 against on its next delivery attempt anyway is a
+    smaller problem than a graph stuck unable to deactivate."""
+    pairs = _telegram_adapters_for_graph(graph)
+    if not pairs:
+        return
+    try:
+        resolved_connections = resolve_connections(graph)
+    except ConnectionNotFoundError:
+        logger.exception("Could not resolve connections to deregister Telegram webhook for graph_id=%s", graph_id)
+        return
+    for _webhook_node, adapter_node in pairs:
+        connection_name = adapter_node.config.get("bot_token_connection")
+        token = resolved_connections.get(connection_name)
+        if not isinstance(token, str):
+            continue
+        try:
+            _call_telegram_api(token, "deleteWebhook", {})
+        except RuntimeError:
+            logger.exception("Failed to deregister Telegram webhook for graph_id=%s", graph_id)
+
+
 def _register_triggers(graph_id: str, graph: GraphSpec) -> list[trigger_registry.TriggerRecord]:
     """The actual registration work (a cron job per `schedule_trigger`, a
     dynamic webhook route per `webhook_trigger`) -- spec-015 §4: extracted
@@ -644,6 +788,10 @@ def activate_graph(graph_id: str, graph: GraphSpec) -> ActivateGraphResponse:
 
     try:
         triggers = _register_triggers(graph_id, graph)
+        # spec-018: auto-registers Telegram's webhook if this graph has a
+        # telegram_adapter -- a no-op for every other graph. Failure here
+        # rolls back exactly like an invalid cron expression does.
+        _sync_telegram_webhooks_on_activate(graph_id, graph, triggers)
     except HTTPException:
         _deactivate(graph_id)  # don't leave a half-registered graph behind
         raise
@@ -655,8 +803,13 @@ def activate_graph(graph_id: str, graph: GraphSpec) -> ActivateGraphResponse:
 
 @app.post("/graphs/{graph_id}/deactivate")
 def deactivate_graph(graph_id: str) -> dict[str, str]:
-    if trigger_registry.get_active(graph_id) is None:
+    active = trigger_registry.get_active(graph_id)
+    if active is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' is not active")
+    # spec-018: best-effort deregistration of Telegram's webhook, if any --
+    # see _sync_telegram_webhooks_on_deactivate's own docstring for why this
+    # is deliberately not fatal to deactivation itself, unlike activate.
+    _sync_telegram_webhooks_on_deactivate(graph_id, active.graph)
     _deactivate(graph_id)
     graphs_store.set_is_active(graph_id, is_active=False, updated_at=_utcnow_iso())
     return {"status": "inactive"}

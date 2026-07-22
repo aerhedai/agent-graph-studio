@@ -44,3 +44,4 @@ Out of scope (future specs):
 ## 6. Open questions
 
 - Should the public base URL be validated (e.g. a real reachability check) when set, or trusted as-is? Recommend: a lightweight "Test" action (attempt a real request to `{base_url}/openapi.json` or similar) at the point it's set, surfaced as a warning if unreachable — not a hard block, since a URL can be correct but momentarily unreachable (e.g. a tunnel not yet started) without the setting itself being wrong.
+  - Resolved: adopted as recommended, using SPEC-017's `/health` endpoint (unauthenticated, purpose-built for exactly this kind of check) rather than `/openapi.json`.

@@ -41,6 +41,7 @@ import type {
 } from "../api/types";
 import { graphSpecToNodesAndEdges, nodesAndEdgesToGraphSpec } from "../graph/serialize";
 import { HistoryPanel } from "../panels/HistoryPanel";
+import { SettingsPanel } from "../panels/SettingsPanel";
 import { NodeInspectorPanel } from "../panels/NodeInspectorPanel";
 import {
   ConnectionTypeContext,
@@ -145,6 +146,7 @@ function CanvasInner() {
   );
   const [activationError, setActivationError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [triggers, setTriggers] = useState<TriggerInfo[] | null>(null);
   const { screenToFlowPosition } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
@@ -907,6 +909,9 @@ function CanvasInner() {
             >
               History
             </button>
+            <button type="button" className="run-bar__secondary" onClick={() => setShowSettings(true)}>
+              Settings
+            </button>
           </div>
           <div className="canvas-wrapper" onDrop={onDrop} onDragOver={onDragOver}>
             <ReactFlow
@@ -956,6 +961,7 @@ function CanvasInner() {
       {showHistory && (
         <HistoryPanel onClose={() => setShowHistory(false)} onSelectRun={(id) => void handleSelectHistoricalRun(id)} />
       )}
+      {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
       </GroupActionsContext.Provider>
     </ConnectionTypeContext.Provider>
   );

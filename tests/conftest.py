@@ -70,6 +70,14 @@ def isolated_api_key(monkeypatch):
     monkeypatch.setenv("AGENT_GRAPH_STUDIO_API_KEY", TEST_API_KEY)
 
 
+@pytest.fixture(autouse=True)
+def isolated_settings_store(tmp_path, monkeypatch):
+    """Every test gets its own empty, throwaway settings file -- no test may
+    ever read or write the real ~/.agent-graph-studio/settings.json
+    (spec-018). Mirrors isolated_connections_store above exactly."""
+    monkeypatch.setenv("AGENT_GRAPH_STUDIO_SETTINGS_PATH", str(tmp_path / "settings.json"))
+
+
 @pytest.fixture
 def registered_test_connection():
     """Registers a connection named "test-connection" in the isolated store
