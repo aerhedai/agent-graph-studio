@@ -1,0 +1,35 @@
+# SPEC-016: two services, one named volume for durable state (SQLite files
+# + the connections store) so a `docker compose down && up` (container
+# recreate, not just a soft restart) doesn't lose data -- see
+# docs/DEPLOYMENT.md for the full environment-variable reference.
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - agent-graph-studio-data:/data
+    environment:
+      # Explicit, even though backend/Dockerfile's HOME=/data already makes
+      # these the default -- self-documenting for anyone reading this file
+      # without also reading the Dockerfile.
+      AGENT_GRAPH_STUDIO_CONNECTIONS_PATH: /data/.agent-graph-studio/connections.json
+      AGENT_GRAPH_STUDIO_RUNS_DB_PATH: /data/.agent-graph-studio/runs.db
+      AGENT_GRAPH_STUDIO_GRAPHS_DB_PATH: /data/.agent-graph-studio/graphs.db
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_API_BASE: ""
+    ports:
+      - "8081:80"
+    depends_on:
+      - backend
+
+volumes:
+  agent-graph-studio-data:
