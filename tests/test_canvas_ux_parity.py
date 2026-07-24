@@ -4,11 +4,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend.api.app as app_module
-from backend.api.app import _telegram_adapters_for_graph, app
+import backend.integrations.telegram.webhook_sync as telegram_webhook_sync_module
+from backend.api.app import app
 from backend.connections.store import add_connection
 from backend.schema.loader import parse_graph_json
 from backend.storage import settings_store
 from backend.triggers import registry as trigger_registry
+from backend.triggers.webhook_sync import adapter_pairs_for_graph
 
 # spec-017: must match tests/conftest.py's TEST_API_KEY.
 client = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
@@ -50,12 +52,12 @@ def _deactivate_quietly(graph_id: str) -> None:
     client.post(f"/graphs/{graph_id}/deactivate")
 
 
-# --- _telegram_adapters_for_graph traversal ---------------------------------
+# --- adapter_pairs_for_graph traversal ---------------------------------
 
 
 def test_finds_telegram_adapter_pair():
     graph = parse_graph_json(__import__("json").dumps(_telegram_graph()))
-    pairs = _telegram_adapters_for_graph(graph)
+    pairs = adapter_pairs_for_graph(graph)
     assert len(pairs) == 1
     webhook_node, adapter_node = pairs[0]
     assert webhook_node.id == "trigger"
@@ -65,7 +67,7 @@ def test_finds_telegram_adapter_pair():
 
 def test_generic_adapter_graph_yields_no_telegram_pairs():
     graph = parse_graph_json(__import__("json").dumps(_generic_graph()))
-    assert _telegram_adapters_for_graph(graph) == []
+    assert adapter_pairs_for_graph(graph) == []
 
 
 def test_graph_with_no_webhook_trigger_at_all_yields_no_pairs():
@@ -78,7 +80,7 @@ def test_graph_with_no_webhook_trigger_at_all_yields_no_pairs():
             }
         )
     )
-    assert _telegram_adapters_for_graph(graph) == []
+    assert adapter_pairs_for_graph(graph) == []
 
 
 # --- settings store ----------------------------------------------------------
@@ -127,7 +129,7 @@ def test_activate_with_telegram_adapter_calls_set_webhook(monkeypatch):
         calls.append((token, method, params))
         return {"ok": True, "result": True}
 
-    monkeypatch.setattr(app_module, "_call_telegram_api", fake_call)
+    monkeypatch.setattr(telegram_webhook_sync_module, "call_telegram_api", fake_call)
 
     graph_id = "telegram-activate-graph"
     try:
@@ -162,7 +164,7 @@ def test_activate_rolls_back_when_telegram_api_rejects(monkeypatch):
     def failing_call(token, method, params):
         raise RuntimeError("Telegram API 'setWebhook' rejected the request: bad token")
 
-    monkeypatch.setattr(app_module, "_call_telegram_api", failing_call)
+    monkeypatch.setattr(telegram_webhook_sync_module, "call_telegram_api", failing_call)
 
     graph_id = "telegram-reject-graph"
     response = client.post(f"/graphs/{graph_id}/activate", json=_telegram_graph())
@@ -181,7 +183,7 @@ def test_deactivate_calls_delete_webhook(monkeypatch):
         calls.append(method)
         return {"ok": True, "result": True}
 
-    monkeypatch.setattr(app_module, "_call_telegram_api", fake_call)
+    monkeypatch.setattr(telegram_webhook_sync_module, "call_telegram_api", fake_call)
 
     graph_id = "telegram-deactivate-graph"
     client.post(f"/graphs/{graph_id}/activate", json=_telegram_graph())
@@ -204,7 +206,7 @@ def test_deactivate_succeeds_even_if_delete_webhook_fails(monkeypatch):
             raise RuntimeError("Telegram is briefly unreachable")
         return {"ok": True, "result": True}
 
-    monkeypatch.setattr(app_module, "_call_telegram_api", fake_call_ok_then_fail)
+    monkeypatch.setattr(telegram_webhook_sync_module, "call_telegram_api", fake_call_ok_then_fail)
 
     graph_id = "telegram-flaky-deactivate-graph"
     client.post(f"/graphs/{graph_id}/activate", json=_telegram_graph())
@@ -217,7 +219,9 @@ def test_deactivate_succeeds_even_if_delete_webhook_fails(monkeypatch):
 
 def test_activate_without_telegram_adapter_never_calls_telegram_api(monkeypatch):
     calls = []
-    monkeypatch.setattr(app_module, "_call_telegram_api", lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(
+        telegram_webhook_sync_module, "call_telegram_api", lambda *a, **k: calls.append(1)
+    )
 
     graph_id = "non-telegram-graph"
     try:

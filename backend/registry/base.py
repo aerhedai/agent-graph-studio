@@ -87,6 +87,17 @@ class NodeDefinition:
     `telegram_adapter`'s `message_text`/`sender_id`/`chat_id`). Names the
     slot to mirror. None for every other type, including `agent` (whose own
     `answer` output is fixed regardless of which `model` is connected)."""
+    integration: str | None = None
+    """spec-019 §4: which app/integration this type belongs to under the
+    "apps" palette category -- e.g. "telegram" for a manifest-backed type,
+    or an `mcp_server` connection's own name for a dynamically-generated
+    type. None for every non-app node type."""
+    capability_group: str | None = None
+    """spec-019 §4: a human-curated sub-grouping within `integration` (e.g.
+    "Messaging", "Listening") for manifest-backed app types. None for
+    dynamically-generated MCP nodes, which have no curated grouping --
+    the palette renders those as a flatter Apps -> connection -> tool
+    hierarchy instead of the 3-level Apps -> App -> capability_group one."""
 
 
 def effective_inputs(definition: NodeDefinition, node: NodeSpec) -> list[InputSlotSpec] | None:
@@ -132,6 +143,16 @@ class NodeRegistry:
                 f"'{definition.result_slot}' but has no matching input slot"
             )
         self._defs[definition.type_name] = definition
+
+    def unregister(self, type_name: str) -> None:
+        """spec-019: removes a dynamically-generated node type (e.g. when an
+        `mcp_server` connection is refreshed or deleted). A no-op if the
+        type isn't registered -- callers doing "clean up whatever's there"
+        don't need to check existence first. Every other (statically,
+        import-time registered) node type is never unregistered in
+        practice; this exists specifically for the runtime-registration
+        case."""
+        self._defs.pop(type_name, None)
 
     def get(self, type_name: str) -> NodeDefinition | None:
         return self._defs.get(type_name)

@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from backend.execution import approvals
 from backend.execution.engine import run_graph
 from backend.execution.trace import TraceRecord
 from backend.schema.models import GraphSpec
@@ -139,10 +140,23 @@ def execute_run(run_id: str, graph: GraphSpec, resources: dict[str, Any] | None 
 
     on_sub_node_activity = _make_on_sub_node_activity(record)
 
+    # Every run started through the API (manual or trigger-fired) answers
+    # its approval gate from the canvas instead of a terminal input() call
+    # -- see backend/execution/approvals.py. The CLI's own run_graph() call
+    # never sets this, so it keeps using default_terminal_approval
+    # unchanged (ADR-004's original behavior, still correct for a context
+    # with no canvas to show a pending approval in).
+    def approval_prompt(tool_name: str, arguments: dict[str, Any]) -> bool:
+        return approvals.request_approval(run_id, tool_name, arguments)
+
     try:
         result = run_graph(
             graph,
-            resources={**(resources or {}), "on_sub_node_activity": on_sub_node_activity},
+            resources={
+                **(resources or {}),
+                "on_sub_node_activity": on_sub_node_activity,
+                "approval_prompt": approval_prompt,
+            },
             on_round_start=on_round_start,
             on_trace_record=on_trace_record,
         )
@@ -162,3 +176,7 @@ def execute_run(run_id: str, graph: GraphSpec, resources: dict[str, Any] | None 
         runs_store.complete_run_record(
             run_id, record.status, record.finished_at, result_json, error
         )
+        # spec-019: "remember this decision for the rest of the run"
+        # approvals are scoped to one run's lifetime -- clear them once it
+        # ends so they don't leak into a future run reusing the same tool.
+        approvals.clear_remembered_for_run(run_id)

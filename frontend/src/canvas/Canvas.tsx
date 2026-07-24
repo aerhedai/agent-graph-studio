@@ -27,6 +27,7 @@ import {
   listGraphs,
   listRuns,
   pollRun,
+  resolveApproval,
   setApiKey,
   submitRun,
   UnauthorizedError,
@@ -119,6 +120,10 @@ function CanvasInner() {
   const [run, setRun] = useState<RunStatusResponse | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
+  // spec-019: "don't ask again this run" checkbox state, per pending
+  // approval_id -- purely local UI state read at click-time by
+  // handleResolveApproval, not persisted anywhere itself.
+  const [rememberApproval, setRememberApproval] = useState<Record<string, boolean>>({});
   const [nodeTypesByName, setNodeTypesByName] = useState<Record<string, NodeTypeInfo>>({});
   const [connectionTypeByName, setConnectionTypeByName] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -518,6 +523,25 @@ function CanvasInner() {
     [applyRunToNodes, applyRunToEdges],
   );
 
+  // spec-019: answers a pending approval-gated tool call from the canvas
+  // instead of a terminal input() prompt -- immediately re-polls afterward
+  // for snappier feedback rather than waiting up to POLL_INTERVAL_MS for
+  // the banner to clear. `remember`: don't ask again for this tool for the
+  // rest of this run (per-approval checkbox state, keyed by approval_id
+  // since a run can have more than one pending approval at once).
+  async function handleResolveApproval(approvalId: string, approved: boolean, remember: boolean) {
+    if (!run) return;
+    try {
+      await resolveApproval(run.run_id, approvalId, approved, remember);
+      const status = await pollRun(run.run_id);
+      setRun(status);
+      applyRunToNodes(status);
+      applyRunToEdges(status);
+    } catch (e) {
+      setRunError(String(e));
+    }
+  }
+
   // spec-009: the one shared entry point into the live-polling pipeline --
   // used by both a manual Run click and the watch loop below noticing an
   // externally-triggered run, so the two are visually indistinguishable.
@@ -913,6 +937,47 @@ function CanvasInner() {
               Settings
             </button>
           </div>
+          {run && run.pending_approvals.length > 0 && (
+            // spec-019: an approval-gated tool call is blocked mid-run,
+            // waiting on a decision that used to only be answerable via a
+            // terminal input() prompt -- see backend/execution/approvals.py.
+            <div className="approval-banner">
+              {run.pending_approvals.map((p) => (
+                <div key={p.approval_id} className="approval-banner__item">
+                  <span className="approval-banner__text">
+                    Approve tool call <code>{p.tool_name}</code>({JSON.stringify(p.arguments)})?
+                  </span>
+                  <label className="approval-banner__remember">
+                    <input
+                      type="checkbox"
+                      checked={rememberApproval[p.approval_id] ?? false}
+                      onChange={(e) =>
+                        setRememberApproval((prev) => ({ ...prev, [p.approval_id]: e.target.checked }))
+                      }
+                    />
+                    Don't ask again this run
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      void handleResolveApproval(p.approval_id, true, rememberApproval[p.approval_id] ?? false)
+                    }
+                  >
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    className="run-bar__secondary"
+                    onClick={() =>
+                      void handleResolveApproval(p.approval_id, false, rememberApproval[p.approval_id] ?? false)
+                    }
+                  >
+                    Reject
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="canvas-wrapper" onDrop={onDrop} onDragOver={onDragOver}>
             <ReactFlow
               nodes={visibleNodes}

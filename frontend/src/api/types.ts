@@ -28,6 +28,14 @@ export interface NodeTypeInfo {
   sub_node_slots?: Record<string, SubNodeSlotInfo> | null;
   sub_node_role?: string | null;
   resolve_slots_from_sub_node?: string | null;
+  // spec-019: "apps" category grouping. `integration` is the app name
+  // (manifest-backed, e.g. "telegram") or an mcp_server connection's own
+  // name (dynamically generated). `capability_group` is a curated
+  // sub-grouping (e.g. "Messaging") for manifest apps only -- null for
+  // generated nodes, which render a flatter Apps -> connection -> tool
+  // hierarchy instead of the 3-level Apps -> App -> capability_group one.
+  integration?: string | null;
+  capability_group?: string | null;
 }
 
 export interface JsonSchemaProperty {
@@ -73,11 +81,21 @@ export interface RunSubmitResponse {
   status: string;
 }
 
+export interface PendingApprovalInfo {
+  approval_id: string;
+  tool_name: string;
+  arguments: Record<string, unknown>;
+}
+
 export interface RunStatusResponse {
   run_id: string;
   status: "running" | "completed" | "failed";
   running_node_ids: string[];
   active_sub_node_ids: string[];
+  // spec-019: any approval-gated tool call currently blocked waiting for a
+  // decision -- resolveApproval() answers it. Always empty for a
+  // historical run or one that never hit an approval gate.
+  pending_approvals: PendingApprovalInfo[];
   trace: TraceRecord[];
   result: Record<string, unknown> | null;
   error: string | null;

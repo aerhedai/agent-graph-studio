@@ -9,6 +9,7 @@ base.py, resolver.py, the API layer, or the frontend connection picker.
 
 from backend.connections import (  # noqa: F401
     anthropic_connection,
+    mcp_server_connection,
     ollama_connection,
     telegram_connection,
     vector_store_connection,
