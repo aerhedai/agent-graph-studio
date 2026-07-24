@@ -26,6 +26,8 @@ def register_node(
     sub_node_slots: dict[str, SubNodeSlotSpec] | None = None,
     sub_node_role: str | None = None,
     resolve_slots_from_sub_node: str | None = None,
+    integration: str | None = None,
+    capability_group: str | None = None,
     registry: NodeRegistry = default_registry,
 ) -> Callable:
     """Decorator bundling a node type's input/output/config schema and its
@@ -63,6 +65,8 @@ def register_node(
                 sub_node_slots=sub_node_slots,
                 sub_node_role=sub_node_role,
                 resolve_slots_from_sub_node=resolve_slots_from_sub_node,
+                integration=integration,
+                capability_group=capability_group,
             )
         )
         return execute_fn

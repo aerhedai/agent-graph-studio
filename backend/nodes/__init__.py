@@ -20,6 +20,8 @@ from backend.nodes import (  # noqa: F401
     model,
     schedule_trigger,
     telegram_adapter,
+    telegram_chat_management,
+    telegram_messaging,
     text_input,
     text_output,
     tool_group,

@@ -9,7 +9,6 @@ MVP decision not to yet distinguish read vs. write tool calls.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -17,7 +16,7 @@ from pydantic import BaseModel, Field
 from backend.execution.errors import NodeExecutionError
 from backend.execution.types import ExecutionContext, NodeResult
 from backend.mcp import client as mcp_client
-from backend.mcp.client import McpConnectionError, coerce_value, find_tool
+from backend.mcp.client import McpConnectionError, coerce_value, default_terminal_approval, find_tool
 from backend.registry.base import InputSlotSpec, OutputSlotSpec
 from backend.registry.decorators import register_node
 from backend.schema.models import NodeSpec
@@ -58,13 +57,6 @@ def _resolve_mcp_slots(
     return inputs, outputs
 
 
-def _default_terminal_approval(tool_name: str, arguments: dict[str, Any]) -> bool:
-    print(f"\n[mcp_call] About to call tool '{tool_name}' with arguments:")
-    print(json.dumps(arguments, indent=2))
-    response = input("Proceed? [y/N]: ").strip().lower()
-    return response == "y"
-
-
 @register_node(
     "mcp_call",
     inputs=[],
@@ -98,7 +90,7 @@ def execute_mcp_call(ctx: ExecutionContext) -> NodeResult:
         raise NodeExecutionError(f"mcp_call failed to resolve tool: {e}") from e
 
     if config.require_approval:
-        approve = ctx.resources.get("approval_prompt", _default_terminal_approval)
+        approve = ctx.resources.get("approval_prompt", default_terminal_approval)
         if not approve(config.tool_name, arguments):
             raise NodeExecutionError(
                 f"Tool call to '{config.tool_name}' was declined by the approval gate"

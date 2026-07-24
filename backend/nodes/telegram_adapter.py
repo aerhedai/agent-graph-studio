@@ -47,6 +47,8 @@ class TelegramAdapterConfig(BaseModel):
     config_model=TelegramAdapterConfig,
     category="triggers",
     sub_node_role="trigger_adapter",
+    integration="telegram",
+    capability_group="Listening",
 )
 def execute_telegram_adapter(ctx: ExecutionContext) -> NodeResult:
     payload = ctx.inputs["payload"]

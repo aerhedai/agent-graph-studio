@@ -15,11 +15,10 @@ reasoned about per-route.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
-import urllib.error
-import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -30,6 +29,7 @@ from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPExcepti
 from fastapi.middleware.cors import CORSMiddleware
 
 import backend.connections  # noqa: F401 -- import side effect registers every connection type
+import backend.integrations  # noqa: F401 -- import side effect registers every integration's webhook-sync handler
 import backend.nodes  # noqa: F401 -- import side effect registers every node type
 from backend.api import runs
 from backend.api.schemas import (
@@ -42,6 +42,9 @@ from backend.api.schemas import (
     GraphDetail,
     GraphSummary,
     NodeTypeInfo,
+    PendingApprovalInfo,
+    RefreshCapabilitiesResponse,
+    ResolveApprovalRequest,
     ResolveSlotsRequest,
     ResolveSlotsResponse,
     RunListResponse,
@@ -68,12 +71,15 @@ from backend.connections.store import (
     get_connection,
     list_connections,
 )
+from backend.execution import approvals
+from backend.mcp import generated_nodes
 from backend.registry.base import default_registry, effective_inputs, effective_outputs
 from backend.schema.models import GraphSpec, NodeSpec
 from backend.storage import graphs_store, runs_store, settings_store
 from backend.triggers import registry as trigger_registry
 from backend.triggers import runner as trigger_runner
 from backend.triggers import scheduler as trigger_scheduler
+from backend.triggers import webhook_sync
 from backend.validation.errors import GraphValidationError
 from backend.validation.validator import validate_graph
 
@@ -161,6 +167,24 @@ async def _lifespan(_app: FastAPI):
     # coroutine actually runs (real ASGI startup / TestClient's `with`
     # context), by which point the whole module has finished executing.
     _reactivate_persisted_graphs()
+    # spec-019: rebuild every saved mcp_server connection's generated node
+    # set on startup too, mirroring the graph-reactivation precedent above
+    # -- the palette must be correct immediately after a restart, not only
+    # after each connection happens to be manually refreshed.
+    #
+    # Dispatched via asyncio.to_thread, NOT called directly -- unlike
+    # _reactivate_persisted_graphs, this calls real MCP discovery
+    # (backend/mcp/client.py's list_tools), which internally does its own
+    # asyncio.run() (same sync-over-async pattern used everywhere else MCP
+    # discovery happens). That fails outright when called directly from
+    # this coroutine, since _lifespan already runs on uvicorn's own event
+    # loop -- discovered live, restarting the backend after this feature
+    # was added. Every other MCP-discovery call site (POST /connections,
+    # POST /connections/{name}/refresh-capabilities) is a plain synchronous
+    # route handler, dispatched through Starlette's own worker thread, so
+    # it never hits this; startup is the one place this module runs
+    # directly on the event loop thread.
+    await asyncio.to_thread(generated_nodes.regenerate_all_on_startup)
     yield
 
 
@@ -198,9 +222,11 @@ def _slot_info_list(slots) -> list[SlotInfo]:
 def list_node_types() -> list[NodeTypeInfo]:
     """The node palette's entire data source. `default_registry.all_types()`
     (backend/registry/base.py) is the *only* place any node type list is
-    enumerated -- populated purely by @register_node(...) decorator side
-    effects across backend/nodes/*.py. No type name is hardcoded here or
-    anywhere in the frontend; a new backend node type appears automatically.
+    enumerated -- populated by @register_node(...) decorator side effects
+    across backend/nodes/*.py at import time, plus (spec-019) runtime
+    registrations from backend/mcp/generated_nodes.py for each saved
+    `mcp_server` connection. No type name is hardcoded here or anywhere in
+    the frontend; a new backend node type appears automatically either way.
     """
     infos: list[NodeTypeInfo] = []
     for type_name in default_registry.all_types():
@@ -232,6 +258,8 @@ def list_node_types() -> list[NodeTypeInfo]:
                 sub_node_slots=sub_node_slots,
                 sub_node_role=definition.sub_node_role,
                 resolve_slots_from_sub_node=definition.resolve_slots_from_sub_node,
+                integration=definition.integration,
+                capability_group=definition.capability_group,
             )
         )
     return infos
@@ -384,6 +412,21 @@ def create_connection(request: CreateConnectionRequest) -> ConnectionInfo:
         profile = add_connection(request.name, request.type, request.config)
     except DuplicateConnectionError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+
+    # spec-019: an mcp_server connection's node types are generated once,
+    # here, at creation -- not polled. A discovery failure rolls the
+    # creation back rather than leaving a saved connection with zero
+    # generated capabilities and no signal why (the same fail-closed
+    # instinct as SPEC-018's activation rollback).
+    if request.type == "mcp_server":
+        try:
+            generated_nodes.generate_node_types_for_connection(request.name)
+        except Exception as e:
+            delete_connection(request.name)
+            raise HTTPException(
+                status_code=502, detail=f"Connection saved config is valid, but tool discovery failed: {e}"
+            ) from e
+
     return ConnectionInfo(name=profile.name, type=profile.type)
 
 
@@ -423,6 +466,28 @@ def test_connection_endpoint(name: str, request: TestConnectionRequest) -> TestC
 def delete_connection_endpoint(name: str) -> None:
     if not delete_connection(name):
         raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
+    # spec-019: a no-op for any connection that never had generated node
+    # types (every type except mcp_server) -- cheap and correct either way.
+    generated_nodes.unregister_for_connection(name)
+
+
+@app.post("/connections/{name}/refresh-capabilities", response_model=RefreshCapabilitiesResponse)
+def refresh_capabilities(name: str) -> RefreshCapabilitiesResponse:
+    """spec-019: re-runs live discovery for an `mcp_server` connection and
+    updates its generated node set -- discovery is refreshed explicitly,
+    never polled (see backend/mcp/generated_nodes.py's own docstring). A
+    failed refresh leaves the previously-generated set intact (see
+    generate_node_types_for_connection's ordering)."""
+    profile = get_connection(name)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
+    if profile.type != "mcp_server":
+        raise HTTPException(status_code=422, detail=f"Connection '{name}' is not an mcp_server connection")
+    try:
+        generated_types = generated_nodes.generate_node_types_for_connection(name)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to refresh capabilities: {e}") from e
+    return RefreshCapabilitiesResponse(generated_types=generated_types)
 
 
 @app.delete("/connections/{name}/vectors", status_code=204)
@@ -523,6 +588,10 @@ def get_run(run_id: str) -> RunStatusResponse:
     during."""
     record = runs.get_run_snapshot(run_id)
     if record is not None:
+        pending_approvals = [
+            PendingApprovalInfo(approval_id=p.approval_id, tool_name=p.tool_name, arguments=p.arguments)
+            for p in approvals.list_pending_for_run(run_id)
+        ]
         return RunStatusResponse(
             run_id=record.run_id,
             status=record.status,
@@ -530,6 +599,7 @@ def get_run(run_id: str) -> RunStatusResponse:
             trigger_source=record.trigger_source,
             running_node_ids=record.running_node_ids,
             active_sub_node_ids=record.active_sub_node_ids,
+            pending_approvals=pending_approvals,
             trace=record.trace,
             result=record.result,
             error=record.error,
@@ -552,10 +622,25 @@ def get_run(run_id: str) -> RunStatusResponse:
         trigger_source=row.trigger_source,
         running_node_ids=[],
         active_sub_node_ids=[],
+        pending_approvals=[],
         trace=trace,
         result=result,
         error=row.error,
     )
+
+
+@app.post("/runs/{run_id}/approvals/{approval_id}")
+def resolve_run_approval(run_id: str, approval_id: str, request: ResolveApprovalRequest) -> dict[str, str]:
+    """spec-019: answers a pending approval-gated tool call from the canvas
+    (backend/execution/approvals.py) -- unblocks the node's execute() call
+    that's waiting on it. `run_id` isn't itself used to look up the
+    approval (approval_id alone is already globally unique) but is part of
+    the URL for symmetry with every other /runs/{run_id}/... route and so
+    a client can't accidentally resolve an approval against the wrong run
+    without it being visible in the URL."""
+    if not approvals.resolve_approval(approval_id, request.approved, remember=request.remember):
+        raise HTTPException(status_code=404, detail=f"Unknown or already-resolved approval_id: {approval_id!r}")
+    return {"status": "resolved"}
 
 
 # --- spec-009: trigger nodes (schedule + webhook) ---------------------------
@@ -605,45 +690,14 @@ def _deactivate(graph_id: str) -> None:
     trigger_registry.clear_active(graph_id)
 
 
-# spec-018: auto-registering Telegram's webhook on Activate/Deactivate --
-# plain graph-edge traversal, no engine involvement at all.
+# spec-018/019: auto-registering a trigger adapter's external webhook on
+# Activate/Deactivate -- plain graph-edge traversal plus the generic
+# integration-agnostic interface (backend/triggers/webhook_sync.py). No
+# adapter type is named here; Telegram is just the first registered
+# handler (backend/integrations/telegram/webhook_sync.py).
 
 
-def _telegram_adapters_for_graph(graph: GraphSpec) -> list[tuple[NodeSpec, NodeSpec]]:
-    """Every (webhook_trigger, telegram_adapter) pair in the graph. Most
-    graphs (a generic_adapter, or no webhook_trigger at all) yield an empty
-    list -- this is a no-op for them, never touched."""
-    nodes_by_id = {n.id: n for n in graph.nodes}
-    pairs: list[tuple[NodeSpec, NodeSpec]] = []
-    for node in graph.nodes:
-        if node.type != "webhook_trigger":
-            continue
-        for edge in graph.edges:
-            if edge.kind == "sub_node" and edge.slot == "trigger_adapter" and edge.to.node == node.id:
-                source = nodes_by_id.get(edge.from_.node)
-                if source is not None and source.type == "telegram_adapter":
-                    pairs.append((node, source))
-    return pairs
-
-
-def _call_telegram_api(token: str, method: str, params: dict[str, str]) -> dict[str, Any]:
-    """Plain urllib -- this codebase's established convention for outbound
-    HTTP calls (see backend/connections/ollama_connection.py), not httpx
-    (a transitive dependency only, never used directly elsewhere here)."""
-    url = f"https://api.telegram.org/bot{token}/{method}"
-    if params:
-        url = f"{url}?{urllib.parse.urlencode(params)}"
-    try:
-        with urllib.request.urlopen(url, timeout=10) as resp:
-            body = json.loads(resp.read())
-    except urllib.error.URLError as e:
-        raise RuntimeError(f"Telegram API call to '{method}' failed: {e}") from e
-    if not body.get("ok"):
-        raise RuntimeError(f"Telegram API '{method}' rejected the request: {body.get('description', body)}")
-    return body
-
-
-def _sync_telegram_webhooks_on_activate(
+def _sync_webhooks_on_activate(
     graph_id: str,
     graph: GraphSpec,
     triggers: list[trigger_registry.TriggerRecord],
@@ -652,7 +706,7 @@ def _sync_telegram_webhooks_on_activate(
     the whole activation (matching the existing invalid-cron-expression
     precedent) -- spec-018 §4's resolved decision: Activate must not report
     success while the actual external wiring silently didn't happen."""
-    pairs = _telegram_adapters_for_graph(graph)
+    pairs = webhook_sync.adapter_pairs_for_graph(graph)
     if not pairs:
         return
 
@@ -660,8 +714,8 @@ def _sync_telegram_webhooks_on_activate(
     if not public_base_url:
         raise HTTPException(
             status_code=422,
-            detail="This graph has a telegram_adapter trigger, but no public base URL is "
-            "configured yet -- set one first (see Settings) before activating.",
+            detail="This graph has a trigger adapter that needs a registered webhook, but no "
+            "public base URL is configured yet -- set one first (see Settings) before activating.",
         )
 
     try:
@@ -671,46 +725,43 @@ def _sync_telegram_webhooks_on_activate(
 
     trigger_by_node_id = {t.node_id: t for t in triggers}
     for webhook_node, adapter_node in pairs:
-        connection_name = adapter_node.config.get("bot_token_connection")
-        token = resolved_connections.get(connection_name)
-        if not isinstance(token, str):
-            raise HTTPException(
-                status_code=422,
-                detail=f"telegram_adapter '{adapter_node.id}' references unresolved "
-                f"connection {connection_name!r}",
-            )
+        handler = webhook_sync.get_handler(adapter_node.type)
+        # adapter_pairs_for_graph only returns pairs whose adapter type has
+        # a registered handler, so this is always non-None here -- asserted
+        # rather than silently trusted.
+        assert handler is not None
         # The reported endpoint already carries `?key=...` (SPEC-017) --
         # the exact same URL the trigger chip shows, immediately usable.
         full_url = f"{public_base_url}{trigger_by_node_id[webhook_node.id].endpoint_or_schedule}"
         try:
-            _call_telegram_api(token, "setWebhook", {"url": full_url})
+            handler.sync_on_activate(webhook_node, adapter_node, full_url, resolved_connections)
         except RuntimeError as e:
             raise HTTPException(status_code=502, detail=str(e)) from e
 
 
-def _sync_telegram_webhooks_on_deactivate(graph_id: str, graph: GraphSpec) -> None:
+def _sync_webhooks_on_deactivate(graph_id: str, graph: GraphSpec) -> None:
     """Best-effort, unlike activate's fail-closed behavior -- deactivation's
     primary job (removing the local route/registration) must still succeed
-    even if Telegram's own API is briefly unreachable; a stray webhook
-    Telegram will 404 against on its next delivery attempt anyway is a
-    smaller problem than a graph stuck unable to deactivate."""
-    pairs = _telegram_adapters_for_graph(graph)
+    even if the external API is briefly unreachable; a stray webhook the
+    external service will 404 against on its next delivery attempt anyway
+    is a smaller problem than a graph stuck unable to deactivate."""
+    pairs = webhook_sync.adapter_pairs_for_graph(graph)
     if not pairs:
         return
     try:
         resolved_connections = resolve_connections(graph)
     except ConnectionNotFoundError:
-        logger.exception("Could not resolve connections to deregister Telegram webhook for graph_id=%s", graph_id)
+        logger.exception("Could not resolve connections to deregister webhook(s) for graph_id=%s", graph_id)
         return
-    for _webhook_node, adapter_node in pairs:
-        connection_name = adapter_node.config.get("bot_token_connection")
-        token = resolved_connections.get(connection_name)
-        if not isinstance(token, str):
-            continue
+    for webhook_node, adapter_node in pairs:
+        handler = webhook_sync.get_handler(adapter_node.type)
+        assert handler is not None
         try:
-            _call_telegram_api(token, "deleteWebhook", {})
+            handler.sync_on_deactivate(webhook_node, adapter_node, resolved_connections)
         except RuntimeError:
-            logger.exception("Failed to deregister Telegram webhook for graph_id=%s", graph_id)
+            logger.exception(
+                "Failed to deregister webhook for adapter '%s', graph_id=%s", adapter_node.id, graph_id
+            )
 
 
 def _register_triggers(graph_id: str, graph: GraphSpec) -> list[trigger_registry.TriggerRecord]:
@@ -788,10 +839,11 @@ def activate_graph(graph_id: str, graph: GraphSpec) -> ActivateGraphResponse:
 
     try:
         triggers = _register_triggers(graph_id, graph)
-        # spec-018: auto-registers Telegram's webhook if this graph has a
-        # telegram_adapter -- a no-op for every other graph. Failure here
-        # rolls back exactly like an invalid cron expression does.
-        _sync_telegram_webhooks_on_activate(graph_id, graph, triggers)
+        # spec-018/019: auto-registers a trigger adapter's external webhook,
+        # if this graph has one with a registered sync handler -- a no-op
+        # for every other graph. Failure here rolls back exactly like an
+        # invalid cron expression does.
+        _sync_webhooks_on_activate(graph_id, graph, triggers)
     except HTTPException:
         _deactivate(graph_id)  # don't leave a half-registered graph behind
         raise
@@ -806,10 +858,11 @@ def deactivate_graph(graph_id: str) -> dict[str, str]:
     active = trigger_registry.get_active(graph_id)
     if active is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' is not active")
-    # spec-018: best-effort deregistration of Telegram's webhook, if any --
-    # see _sync_telegram_webhooks_on_deactivate's own docstring for why this
-    # is deliberately not fatal to deactivation itself, unlike activate.
-    _sync_telegram_webhooks_on_deactivate(graph_id, active.graph)
+    # spec-018/019: best-effort deregistration of a trigger adapter's
+    # external webhook, if any -- see _sync_webhooks_on_deactivate's own
+    # docstring for why this is deliberately not fatal to deactivation
+    # itself, unlike activate.
+    _sync_webhooks_on_deactivate(graph_id, active.graph)
     _deactivate(graph_id)
     graphs_store.set_is_active(graph_id, is_active=False, updated_at=_utcnow_iso())
     return {"status": "inactive"}

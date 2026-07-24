@@ -24,6 +24,7 @@ function run(overrides: Partial<RunStatusResponse> = {}): RunStatusResponse {
     status: "running",
     running_node_ids: [],
     active_sub_node_ids: [],
+    pending_approvals: [],
     trace: [],
     result: null,
     error: null,

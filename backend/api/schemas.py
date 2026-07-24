@@ -56,6 +56,16 @@ class NodeTypeInfo(BaseModel):
     non-null but whose own `answer` output never changes). Exposed so the
     canvas can resolve a root's real ports client-side generically -- no
     slot name hardcoded in frontend code."""
+    integration: str | None = None
+    """spec-019 §4: which app/integration this type belongs to under the
+    "apps" category -- "telegram" for a manifest-backed type, or an
+    `mcp_server` connection's own name for a dynamically-generated type.
+    None for every non-app node type."""
+    capability_group: str | None = None
+    """spec-019 §4: curated sub-grouping within `integration` (e.g.
+    "Messaging"). None for dynamically-generated MCP nodes, which have no
+    curated grouping -- the palette renders those as Apps -> connection ->
+    tool instead of the 3-level Apps -> App -> capability_group shape."""
 
 
 class ResolveSlotsRequest(BaseModel):
@@ -70,6 +80,12 @@ class ResolveSlotsResponse(BaseModel):
 class RunSubmitResponse(BaseModel):
     run_id: str
     status: str
+
+
+class PendingApprovalInfo(BaseModel):
+    approval_id: str
+    tool_name: str
+    arguments: dict[str, Any]
 
 
 class RunStatusResponse(BaseModel):
@@ -89,6 +105,13 @@ class RunStatusResponse(BaseModel):
     through the engine's own scheduler -- see
     `backend.nodes.agent._notify_sub_node_activity`. Always empty for a
     historical/persisted run (same reasoning as `running_node_ids` above)."""
+    pending_approvals: list[PendingApprovalInfo] = []
+    """spec-019: any approval-gated tool call (mcp_call, or a
+    dynamically-generated MCP node from an untrusted mcp_server connection)
+    currently blocked waiting for a decision -- POST
+    /runs/{run_id}/approvals/{approval_id} answers it. Always empty for a
+    historical/persisted run (nothing can still be waiting on one) or for
+    a run whose approval gates were all already resolved or never hit."""
     trace: list[TraceRecord]
     result: dict[str, Any] | None
     error: str | None
@@ -112,6 +135,16 @@ class RunListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class ResolveApprovalRequest(BaseModel):
+    approved: bool
+    remember: bool = False
+    """If true, this decision is remembered for (this run, this tool name)
+    -- every subsequent call to the same tool within this run auto-resolves
+    without asking again. Scoped to the run's lifetime, not persisted
+    beyond it. Distinct from an mcp_server connection's `trusted` flag,
+    which skips asking for that connection's nodes across every run."""
 
 
 class ConnectionTypeInfo(BaseModel):
@@ -158,6 +191,15 @@ class TestConnectionRequest(BaseModel):
 class TestConnectionResponse(BaseModel):
     success: bool
     message: str
+
+
+class RefreshCapabilitiesResponse(BaseModel):
+    generated_types: list[str]
+    """spec-019: the full, current set of node type names generated for
+    this `mcp_server` connection after the refresh -- lets the canvas
+    confirm what actually changed without a second GET /node-types round
+    trip being strictly necessary (though it should still refetch the
+    palette to render them)."""
 
 
 class TriggerInfo(BaseModel):

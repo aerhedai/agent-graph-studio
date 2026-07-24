@@ -96,6 +96,23 @@ export function pollRun(runId: string): Promise<RunStatusResponse> {
   return request<RunStatusResponse>(`/runs/${encodeURIComponent(runId)}`);
 }
 
+// spec-019: answers a pending approval-gated tool call from the canvas
+// instead of a terminal input() prompt -- see backend/execution/approvals.py.
+// `remember`: don't ask again for this same tool for the rest of this run
+// (distinct from an mcp_server connection's `trusted` flag, which skips
+// asking across every run).
+export function resolveApproval(
+  runId: string,
+  approvalId: string,
+  approved: boolean,
+  remember = false,
+): Promise<{ status: string }> {
+  return request<{ status: string }>(
+    `/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(approvalId)}`,
+    { method: "POST", body: JSON.stringify({ approved, remember }) },
+  );
+}
+
 // --- spec-009: trigger activation --------------------------------------
 
 export function activateGraph(graphId: string, graph: GraphSpec): Promise<ActivateGraphResponse> {

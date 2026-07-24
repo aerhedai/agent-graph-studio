@@ -43,6 +43,7 @@ branch here -- that's a choice, not an oversight.
   --cat-data: #2bb3a3;
   --cat-connectivity: #ef6ca0;
   --cat-tools: #c17a4a;
+  --cat-apps: #5b8def;
 
   /* --- status colors: transient execution state (node outline, edge
      color) -- only ever shown during/after a real run, driven by actual

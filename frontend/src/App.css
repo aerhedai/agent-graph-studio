@@ -156,6 +156,73 @@
   font-size: 12px;
 }
 
+/* spec-019: a blocked approval-gated tool call, answerable from the canvas
+   instead of a terminal input() prompt -- see backend/execution/approvals.py.
+   Full-width and amber-accented (the same token as the "running" status
+   pill) so it reads as "needs your attention now", not a passive status
+   line. */
+.approval-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--status-running) 10%, var(--color-canvas));
+  flex-shrink: 0;
+}
+
+.approval-banner__item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.approval-banner__remember {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.approval-banner__text {
+  flex: 1;
+  min-width: 200px;
+  font-size: 13px;
+  color: var(--color-text);
+}
+
+.approval-banner__text code {
+  background: var(--color-surface);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  font-size: 12px;
+}
+
+.approval-banner__item button {
+  font: inherit;
+  padding: 5px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--status-running);
+  background: var(--status-running);
+  color: var(--color-canvas);
+  cursor: pointer;
+  transition: filter 150ms var(--ease-standard);
+}
+
+.approval-banner__item button:hover {
+  filter: brightness(1.1);
+}
+
+.approval-banner__item button.run-bar__secondary {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-color: var(--color-border);
+}
+
 /* --- spec-015: graph name + saved-graph select -------------------------- */
 
 .run-bar__graph-name {
@@ -326,6 +393,46 @@
 .palette-category__body-inner {
   overflow: hidden;
   min-height: 0;
+}
+
+/* spec-019: nested grouping inside the "apps" category -- App/connection
+   name, then (for manifest-backed apps only) a curated capability-group
+   sub-header. Dynamically-generated apps skip the second level entirely
+   (AppsCategoryBody renders their items directly under the app name). */
+.palette-apps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.palette-app-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.palette-app-group__name {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+  padding-left: 18px;
+  margin-bottom: 2px;
+}
+
+.palette-capability-group {
+  margin-top: var(--space-2);
+}
+
+.palette-capability-group__name {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  padding-left: 26px;
+  margin-bottom: 2px;
+}
+
+.palette-capability-group .palette__list {
+  margin-top: 2px;
 }
 
 .palette__list {

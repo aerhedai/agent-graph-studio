@@ -73,8 +73,26 @@ def coerce_value(value: str, json_type: str) -> Any:
     if json_type == "boolean":
         return value.strip().lower() in ("true", "1", "yes")
     if json_type in ("object", "array"):
+        # An empty string is a common way a model expresses "nothing here"
+        # for an optional array/object param (e.g. excludePatterns=""),
+        # not valid JSON -- json.loads("") raises JSONDecodeError. Treat it
+        # as an empty collection rather than a hard failure; discovered
+        # live via a real dynamically-generated MCP node call.
+        if value.strip() == "":
+            return [] if json_type == "array" else {}
         return json.loads(value)
     return value
+
+
+def default_terminal_approval(tool_name: str, arguments: dict[str, Any]) -> bool:
+    """The default `require_approval` gate (ADR-004): a blocking terminal
+    y/n prompt. Shared by `mcp_call` and spec-019's dynamically-generated
+    nodes (for connections not marked `trusted`) rather than duplicated --
+    both need the exact same prompt behavior."""
+    print(f"\n[mcp] About to call tool '{tool_name}' with arguments:")
+    print(json.dumps(arguments, indent=2))
+    response = input("Proceed? [y/N]: ").strip().lower()
+    return response == "y"
 
 
 def content_to_text(content: list[Any]) -> str:

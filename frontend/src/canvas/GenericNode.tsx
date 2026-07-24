@@ -1,5 +1,6 @@
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import {
+  Blocks,
   Box,
   ChevronDown,
   ChevronRight,
@@ -90,6 +91,7 @@ export const CATEGORY_PRESENTATION: Record<string, { icon: LucideIcon; colorVar:
   data: { icon: Database, colorVar: "--cat-data", label: "Data" },
   connectivity: { icon: Plug, colorVar: "--cat-connectivity", label: "Connectivity" },
   tools: { icon: Wrench, colorVar: "--cat-tools", label: "Tools" },
+  apps: { icon: Blocks, colorVar: "--cat-apps", label: "Apps" },
 };
 
 export function categoryPresentation(category: string) {
