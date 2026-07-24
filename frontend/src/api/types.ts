@@ -160,6 +160,7 @@ export interface GraphDetail {
   name: string;
   spec: GraphSpec;
   is_active: boolean;
+  created_by?: string | null;
 }
 
 // spec-018: the one app-level setting needed to auto-register external
@@ -212,4 +213,21 @@ export interface RunListResponse {
   total: number;
   limit: number;
   offset: number;
+}
+
+// spec-020: platform authentication, mirroring backend/api/schemas.py's
+// MeResponse/InviteRequest/InviteResponse exactly.
+
+export interface MeResponse {
+  user_id: string;
+  email: string;
+  display_name: string;
+  role: string;
+}
+
+export interface InviteResponse {
+  email: string;
+  role: string;
+  invited_by: string | null;
+  invited_at: string;
 }

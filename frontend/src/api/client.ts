@@ -6,6 +6,8 @@ import type {
   GraphDetail,
   GraphSpec,
   GraphSummary,
+  InviteResponse,
+  MeResponse,
   NodeTypeInfo,
   ResolveSlotsResponse,
   RunListResponse,
@@ -25,6 +27,12 @@ const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 // across a refresh" (every other piece of canvas state is ephemeral by
 // design), since re-entering a login credential every reload would be
 // genuinely painful UX, unlike ephemeral canvas state.
+//
+// spec-020: the stored string is now usually a session JWT issued after a
+// real Google sign-in, not a manually-typed shared key -- storage/retrieval
+// stays byte-for-byte the same either way (the backend's require_auth
+// accepts both), so nothing here needed to change, only what populates it
+// (Canvas.tsx's Google sign-in redirect, not a password-style input).
 const API_KEY_STORAGE_KEY = "agent-graph-studio-api-key";
 
 export function getApiKey(): string | null {
@@ -247,5 +255,26 @@ export function updateSettings(publicBaseUrl: string): Promise<UpdateSettingsRes
   return request<UpdateSettingsResponse>("/settings", {
     method: "PUT",
     body: JSON.stringify({ public_base_url: publicBaseUrl }),
+  });
+}
+
+// --- spec-020: platform authentication ----------------------------------
+
+// A real top-level navigation target, not a fetch() call -- Google's own
+// consent screen has to render in the actual browser tab. `redirect_to` is
+// where the backend sends the browser back to (with the session JWT in the
+// URL fragment) once the OAuth round trip with Google completes.
+export function googleLoginUrl(redirectTo: string): string {
+  return `${API_BASE}/auth/google/login?redirect_to=${encodeURIComponent(redirectTo)}`;
+}
+
+export function getMe(): Promise<MeResponse> {
+  return request<MeResponse>("/auth/me");
+}
+
+export function inviteUser(email: string, role = "member"): Promise<InviteResponse> {
+  return request<InviteResponse>("/auth/invite", {
+    method: "POST",
+    body: JSON.stringify({ email, role }),
   });
 }

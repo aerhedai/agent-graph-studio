@@ -19,19 +19,25 @@ import asyncio
 import json
 import logging
 import os
+import secrets
+import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, Body, Depends, FastAPI, Header, HTTPException, Request
+from dotenv import load_dotenv
+from fastapi import BackgroundTasks, Body, Cookie, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 import backend.connections  # noqa: F401 -- import side effect registers every connection type
 import backend.integrations  # noqa: F401 -- import side effect registers every integration's webhook-sync handler
 import backend.nodes  # noqa: F401 -- import side effect registers every node type
 from backend.api import runs
+from backend.auth import google_oauth
+from backend.auth import jwt as auth_jwt
 from backend.api.schemas import (
     ActivateGraphResponse,
     ActiveGraphInfo,
@@ -41,6 +47,9 @@ from backend.api.schemas import (
     CreateGraphRequest,
     GraphDetail,
     GraphSummary,
+    InviteRequest,
+    InviteResponse,
+    MeResponse,
     NodeTypeInfo,
     PendingApprovalInfo,
     RefreshCapabilitiesResponse,
@@ -75,13 +84,22 @@ from backend.execution import approvals
 from backend.mcp import generated_nodes
 from backend.registry.base import default_registry, effective_inputs, effective_outputs
 from backend.schema.models import GraphSpec, NodeSpec
-from backend.storage import graphs_store, runs_store, settings_store
+from backend.storage import graphs_store, runs_store, settings_store, users_store
 from backend.triggers import registry as trigger_registry
 from backend.triggers import runner as trigger_runner
 from backend.triggers import scheduler as trigger_scheduler
 from backend.triggers import webhook_sync
 from backend.validation.errors import GraphValidationError
 from backend.validation.validator import validate_graph
+
+# Loads ./.env into the process environment for local `uv run` use (Docker
+# Compose sets real env vars directly, so this is a no-op there -- load_dotenv
+# never overrides a variable already set in the real environment).
+# Called before any ensure_*_configured() check below reads its env var, and
+# before every one of this module's own routes can run -- none of the
+# imports above read an env var at import time, only inside functions, so
+# this is safe to place after them rather than needing to precede them.
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +116,18 @@ class MissingApiKeyError(RuntimeError):
         )
 
 
-# spec-017: paths reachable with no credential at all -- schema/shape only
-# (not data), or a health check for container orchestration (SPEC-016).
-_AUTH_EXEMPT_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
+# spec-017/020: paths reachable with no credential at all -- schema/shape
+# only (not data), a health check for container orchestration (SPEC-016),
+# or the two routes a real Google sign-in round trip has to hit before any
+# credential of ours can possibly exist yet.
+_AUTH_EXEMPT_PATHS = {
+    "/health",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+    "/auth/google/login",
+    "/auth/google/callback",
+}
 
 
 def _configured_api_key() -> str:
@@ -116,34 +143,64 @@ def ensure_api_key_configured() -> None:
     _configured_api_key()
 
 
-def require_api_key(
+class AuthenticatedUser:
+    """spec-020: populated onto `request.state.user` only when the caller
+    authenticated via a real JWT (a logged-in human) -- None for a shared-
+    API-key caller (webhooks, other machine-to-machine callers), which is
+    exactly the signal `created_by`/`run_by` need to stay correctly null
+    for a schedule/webhook-triggered run."""
+
+    def __init__(self, user_id: str, email: str, role: str) -> None:
+        self.user_id = user_id
+        self.email = email
+        self.role = role
+
+
+def require_auth(
     request: Request,
     authorization: str | None = Header(default=None),
     key: str | None = None,
 ) -> None:
-    """spec-017: one global dependency (attached to the whole app, not
-    per-route -- see `app = FastAPI(dependencies=...)` below), protecting
-    every route including ones added dynamically later via
-    `app.add_api_route` (the webhook routes -- verified by a real test, not
-    assumed, since a router-level dependency silently not covering a
-    dynamically-added route would be a real, dangerous gap).
+    """spec-020: one global dependency (attached to the whole app, not
+    per-route -- see `app = FastAPI(dependencies=...)` below, unchanged
+    from spec-017's reasoning), still protecting every route including
+    ones added dynamically later via `app.add_api_route` (the webhook
+    routes).
 
-    Two ways to present the one shared secret: `Authorization: Bearer
-    <key>` (the canvas, normal case) or a `?key=<key>` query parameter (for
-    external callers like Telegram that can't set a custom header on a
-    webhook callback URL -- see docs/specs/017-production-hardening.md §6's
-    resolved open question for the full reasoning and disclosed tradeoff).
+    Accepts *either* credential, tried in this order:
+    1. A real JWT session (`Authorization: Bearer <jwt>`) -- a logged-in
+       human via Google sign-in (spec-020). Sets `request.state.user`.
+    2. The spec-017 shared API key, exactly as before (`Authorization:
+       Bearer <key>` or `?key=<key>` -- the mechanism external callers
+       like Telegram's webhook callbacks use, since they can't set a
+       custom header). Leaves `request.state.user` as None.
+
+    Deliberately one dependency accepting either, rather than classifying
+    routes as "human" vs "webhook" and giving each a different dependency
+    -- the acceptance bar is "the shared key keeps working everywhere
+    (regression) and JWTs now also work," not mutual exclusion, and this
+    keeps the "can't forget to protect one route" property a route-
+    differentiated design would risk losing.
     """
+    request.state.user = None
     if request.url.path in _AUTH_EXEMPT_PATHS:
         return
-    configured = _configured_api_key()
+
     supplied: str | None = None
     if authorization and authorization.startswith("Bearer "):
         supplied = authorization[len("Bearer ") :]
     elif key:
         supplied = key
+
+    if supplied:
+        claims = auth_jwt.verify_token(supplied)
+        if claims is not None:
+            request.state.user = AuthenticatedUser(user_id=claims.user_id, email=claims.email, role=claims.role)
+            return
+
+    configured = _configured_api_key()
     if supplied != configured:
-        raise HTTPException(status_code=401, detail="Missing or invalid API key")
+        raise HTTPException(status_code=401, detail="Missing or invalid credential")
 
 
 def _utcnow_iso() -> str:
@@ -155,12 +212,20 @@ def _utcnow_iso() -> str:
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    # Spec-017: eager, explicit checks first -- both secrets must be
-    # genuinely configured before this process is allowed to start serving
-    # anything, not just incidentally validated the first time some other
-    # operation happens to need them.
+    # Spec-017/020: eager, explicit checks first -- every required secret
+    # must be genuinely configured before this process is allowed to start
+    # serving anything, not just incidentally validated the first time some
+    # other operation happens to need them.
     ensure_encryption_key_configured()
     ensure_api_key_configured()
+    auth_jwt.ensure_jwt_secret_configured()
+    google_oauth.ensure_google_oauth_configured()
+    users_store.ensure_admin_email_configured()
+    # spec-020: idempotent -- safe on every boot, not just the first one.
+    # Plain sqlite3 calls, no asyncio.run() involved anywhere in
+    # users_store, so (unlike regenerate_all_on_startup below) this is
+    # safe to call directly on this coroutine's own event-loop thread.
+    users_store.ensure_admin_bootstrapped(os.environ["AGENT_GRAPH_STUDIO_ADMIN_EMAIL"], _utcnow_iso())
     # Spec-015: re-arm every persisted is_active graph's triggers on real
     # process startup -- `_reactivate_persisted_graphs` is defined later in
     # this module; that's fine, its name is only resolved when this
@@ -188,13 +253,14 @@ async def _lifespan(_app: FastAPI):
     yield
 
 
-# spec-017: a single shared credential required on every route (see
-# require_api_key above) -- app-level `dependencies` attaches to the app's
-# router itself, so routes added later via `app.add_api_route` (the
-# dynamic webhook routes, SPEC-009) are covered too, not just the ones
-# defined directly below. Local single-user tool origins remain permissive
-# for CORS -- auth is the actual access control now, not CORS.
-app = FastAPI(title="Agent Graph Studio API", lifespan=_lifespan, dependencies=[Depends(require_api_key)])
+# spec-017/020: one dependency, accepting either a human's JWT session or
+# the shared API key (see require_auth above) -- app-level `dependencies`
+# attaches to the app's router itself, so routes added later via
+# `app.add_api_route` (the dynamic webhook routes, SPEC-009) are covered
+# too, not just the ones defined directly below. Local single-user tool
+# origins remain permissive for CORS -- auth is the actual access control
+# now, not CORS.
+app = FastAPI(title="Agent Graph Studio API", lifespan=_lifespan, dependencies=[Depends(require_auth)])
 
 app.add_middleware(
     CORSMiddleware,
@@ -209,6 +275,134 @@ def health() -> dict[str, str]:
     """Unauthenticated (see _AUTH_EXEMPT_PATHS) -- for container
     orchestration health checks (SPEC-016's Compose setup can use this)."""
     return {"status": "ok"}
+
+
+# --- spec-020: Google sign-in ------------------------------------------
+
+_OAUTH_STATE_COOKIE = "oauth_state"
+
+
+@app.get("/auth/google/login")
+def google_login(redirect_to: str) -> RedirectResponse:
+    """Unauthenticated (see _AUTH_EXEMPT_PATHS) -- the whole point is that
+    no credential of ours can exist yet. `redirect_to` is the frontend's
+    own origin (it passes `window.location.origin`), threaded through a
+    signed, short-lived state token so it survives the round trip through
+    Google's own redirect and back -- local dev (frontend and backend on
+    different ports) and the Docker deployment (same origin, reverse-
+    proxied) both work with zero extra configuration.
+
+    The state token doubles as CSRF protection: set both as an httpOnly
+    cookie *and* as Google's `state` param, and the callback below requires
+    them to match. A validly-signed state token alone isn't enough --  it
+    has to be the one issued to *this* browser for *this* login attempt,
+    not just any state token an attacker could obtain from their own,
+    separate, legitimate login flow.
+    """
+    public_base_url = settings_store.get_public_base_url()
+    if not public_base_url:
+        raise HTTPException(
+            status_code=422,
+            detail="No public base URL configured yet -- set one first (see Settings) "
+            "before signing in with Google.",
+        )
+    state = auth_jwt.issue_state_token(redirect_to)
+    redirect_uri = f"{public_base_url.rstrip('/')}/auth/google/callback"
+    authorization_url = google_oauth.build_authorization_url(redirect_uri, state)
+    response = RedirectResponse(url=authorization_url, status_code=302)
+    response.set_cookie(
+        _OAUTH_STATE_COOKIE,
+        state,
+        max_age=auth_jwt.STATE_TOKEN_EXPIRES_MINUTES * 60,
+        httponly=True,
+        samesite="lax",
+    )
+    return response
+
+
+@app.get("/auth/google/callback")
+def google_callback(
+    code: str,
+    state: str,
+    oauth_state: str | None = Cookie(default=None),
+) -> RedirectResponse:
+    """Unauthenticated (see _AUTH_EXEMPT_PATHS) -- Google redirects here
+    with no credential of ours attached, by definition. Exchanges the real
+    authorization code for real Google userinfo, checks the invite
+    allowlist (a valid Google identity that isn't invited is a clean,
+    specific rejection -- spec-020 §4), creates/looks-up the user, and
+    redirects back to the frontend carrying our own session JWT in the URL
+    *fragment* (`#token=...`), not a query string -- a fragment is never
+    sent to any server (ours or a proxy in between), so the token never
+    ends up in an access log."""
+    if not oauth_state or oauth_state != state:
+        raise HTTPException(status_code=400, detail="OAuth state mismatch -- possible CSRF, please sign in again")
+    redirect_to = auth_jwt.verify_state_token(state)
+    if redirect_to is None:
+        raise HTTPException(status_code=400, detail="OAuth state expired or invalid -- please sign in again")
+
+    public_base_url = settings_store.get_public_base_url() or ""
+    redirect_uri = f"{public_base_url.rstrip('/')}/auth/google/callback"
+    try:
+        userinfo = google_oauth.exchange_code_for_userinfo(code, redirect_uri)
+    except google_oauth.GoogleOAuthError as e:
+        response = RedirectResponse(url=f"{redirect_to}#auth_error={urllib.parse.quote(str(e))}", status_code=302)
+        response.delete_cookie(_OAUTH_STATE_COOKIE)
+        return response
+
+    invite = users_store.get_invite(userinfo.email)
+    if invite is None:
+        response = RedirectResponse(url=f"{redirect_to}#auth_error=not_invited", status_code=302)
+        response.delete_cookie(_OAUTH_STATE_COOKIE)
+        return response
+
+    user = users_store.get_user_by_email(userinfo.email)
+    if user is None:
+        user = users_store.create_user(
+            user_id=str(uuid4()),
+            email=userinfo.email,
+            display_name=userinfo.name,
+            role=invite.role,
+            created_at=_utcnow_iso(),
+            invited_by=invite.invited_by,
+        )
+
+    token = auth_jwt.issue_token(user.id, user.email, user.role)
+    response = RedirectResponse(url=f"{redirect_to}#token={token}", status_code=302)
+    response.delete_cookie(_OAUTH_STATE_COOKIE)
+    return response
+
+
+@app.get("/auth/me", response_model=MeResponse)
+def get_me(http_request: Request) -> MeResponse:
+    """Requires a real JWT session, not just any valid credential -- a
+    shared-API-key caller has no human identity to report (`request.state
+    .user` is None for it), so this is a clean 401 rather than a
+    nonsensical "who am I" answer for a machine caller."""
+    user = http_request.state.user
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not signed in as a user")
+    # Looked up fresh rather than trusting the JWT's own claims for
+    # display_name -- keeps a token stable even if a user's profile
+    # changes after it was issued, and the JWT never carried display_name
+    # in the first place (kept minimal by design).
+    row = users_store.get_user_by_id(user.user_id)
+    if row is None:
+        raise HTTPException(status_code=401, detail="User no longer exists")
+    return MeResponse(user_id=row.id, email=row.email, display_name=row.display_name, role=row.role)
+
+
+@app.post("/auth/invite", response_model=InviteResponse)
+def invite_user(request: InviteRequest, http_request: Request) -> InviteResponse:
+    """Admin-only -- checks http_request.state.user.role directly (not a
+    separate dependency) since this is the one route in the whole app that
+    needs a role check at all; a dedicated require_admin dependency would
+    be speculative generality for a single call site."""
+    user = http_request.state.user
+    if user is None or user.role != "admin":
+        raise HTTPException(status_code=403, detail="Only an admin can invite a new user")
+    row = users_store.add_invite(request.email, request.role, invited_by=user.user_id, invited_at=_utcnow_iso())
+    return InviteResponse(email=row.email, role=row.role, invited_by=row.invited_by, invited_at=row.invited_at)
 
 
 def _slot_info_list(slots) -> list[SlotInfo]:
@@ -289,7 +483,7 @@ def resolve_node_slots(type_name: str, request: ResolveSlotsRequest) -> ResolveS
 
 @app.post("/runs", response_model=RunSubmitResponse, status_code=202)
 def submit_run(
-    graph: GraphSpec, background_tasks: BackgroundTasks, graph_id: str | None = None
+    graph: GraphSpec, background_tasks: BackgroundTasks, http_request: Request, graph_id: str | None = None
 ) -> RunSubmitResponse:
     """Validates synchronously (reusing the exact backend validate_graph(),
     zero duplicated logic) and returns immediately; the run itself executes
@@ -333,7 +527,10 @@ def submit_run(
         raise HTTPException(status_code=422, detail=str(e)) from e
 
     run_id = str(uuid4())
-    runs.create_run(run_id, graph_id=graph_id, trigger_source="manual")
+    # spec-020: None for a shared-API-key caller (no human initiator) --
+    # same request.state.user convention as POST /graphs's created_by.
+    run_by = http_request.state.user.user_id if http_request.state.user else None
+    runs.create_run(run_id, graph_id=graph_id, trigger_source="manual", run_by=run_by)
     background_tasks.add_task(
         runs.execute_run,
         run_id,
@@ -603,6 +800,7 @@ def get_run(run_id: str) -> RunStatusResponse:
             trace=record.trace,
             result=record.result,
             error=record.error,
+            run_by=record.run_by,
         )
 
     row = runs_store.get_run_record(run_id)
@@ -626,6 +824,7 @@ def get_run(run_id: str) -> RunStatusResponse:
         trace=trace,
         result=result,
         error=row.error,
+        run_by=row.run_by,
     )
 
 
@@ -904,11 +1103,15 @@ def _reactivate_persisted_graphs() -> None:
 
 
 @app.post("/graphs", response_model=GraphDetail, status_code=201)
-def create_graph(request: CreateGraphRequest) -> GraphDetail:
+def create_graph(request: CreateGraphRequest, http_request: Request) -> GraphDetail:
     graph_id = str(uuid4())
     now = _utcnow_iso()
-    row = graphs_store.create_graph(graph_id, request.name, request.spec.model_dump_json(), now)
-    return GraphDetail(graph_id=row.graph_id, name=row.name, spec=request.spec, is_active=row.is_active)
+    # spec-020: http_request.state.user is None for a shared-API-key caller
+    # (no human initiator) -- created_by stays correctly null in that case,
+    # set only for a real logged-in human via require_auth.
+    created_by = http_request.state.user.user_id if http_request.state.user else None
+    row = graphs_store.create_graph(graph_id, request.name, request.spec.model_dump_json(), now, created_by=created_by)
+    return GraphDetail(graph_id=row.graph_id, name=row.name, spec=request.spec, is_active=row.is_active, created_by=row.created_by)
 
 
 @app.get("/graphs", response_model=list[GraphSummary])
@@ -929,6 +1132,7 @@ def get_graph(graph_id: str) -> GraphDetail:
         name=row.name,
         spec=GraphSpec.model_validate_json(row.spec_json),
         is_active=row.is_active,
+        created_by=row.created_by,
     )
 
 
@@ -943,6 +1147,7 @@ def update_graph(graph_id: str, request: UpdateGraphRequest) -> GraphDetail:
         name=row.name,
         spec=GraphSpec.model_validate_json(row.spec_json),
         is_active=row.is_active,
+        created_by=row.created_by,
     )
 
 

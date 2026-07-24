@@ -23,6 +23,7 @@ import {
   fetchNodeTypes,
   getApiKey,
   getGraph,
+  googleLoginUrl,
   listActiveGraphs,
   listGraphs,
   listRuns,
@@ -127,11 +128,13 @@ function CanvasInner() {
   const [nodeTypesByName, setNodeTypesByName] = useState<Record<string, NodeTypeInfo>>({});
   const [connectionTypeByName, setConnectionTypeByName] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
-  // spec-017: gate the whole canvas behind a minimal unlock prompt until a
+  // spec-017/020: gate the whole canvas behind a sign-in prompt until a
   // credential is present -- starts true if nothing's stored yet; also
-  // flips back to true if any request comes back 401 (wrong/revoked key).
+  // flips back to true if any request comes back 401 (expired/revoked
+  // session). spec-020 replaced the password-style key entry with a real
+  // Google sign-in redirect; the shared API key still works as a fallback
+  // credential server-side (webhooks), it's just no longer typed in here.
   const [needsUnlock, setNeedsUnlock] = useState<boolean>(() => getApiKey() === null);
-  const [unlockDraft, setUnlockDraft] = useState("");
   const [unlockError, setUnlockError] = useState<string | null>(null);
   // spec-015: a graph's real identity now lives server-side (graphs_store),
   // not a client-only session UUID (that was spec-009's original
@@ -165,13 +168,39 @@ function CanvasInner() {
   const activeRunIdRef = useRef<string | null>(null);
   const lastSeenRunIdRef = useRef<string | null>(null);
 
+  // spec-020: the Google OAuth callback redirects back here carrying the
+  // freshly-issued session JWT (or a rejection reason) in the URL fragment,
+  // never a query param -- fragments never reach any server/proxy, so the
+  // token can't end up in an access log. Runs once on mount, independent of
+  // needsUnlock (it's what flips needsUnlock false in the first place).
+  useEffect(() => {
+    if (!window.location.hash) return;
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    const token = params.get("token");
+    const authError = params.get("auth_error");
+    if (token) {
+      setApiKey(token);
+      setUnlockError(null);
+      setNeedsUnlock(false);
+    } else if (authError) {
+      setUnlockError(
+        authError === "not_invited"
+          ? "That Google account hasn't been invited to Agent Graph Studio."
+          : `Sign-in failed: ${authError}`,
+      );
+    }
+    if (token || authError) {
+      window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    }
+  }, []);
+
   useEffect(() => {
     if (needsUnlock) return;
     fetchNodeTypes()
       .then((types) => setNodeTypesByName(Object.fromEntries(types.map((t) => [t.type, t]))))
       .catch((e: unknown) => {
         if (e instanceof UnauthorizedError) {
-          setUnlockError("Invalid API key");
+          setUnlockError("Your session expired -- please sign in again.");
           setNeedsUnlock(true);
         } else {
           setLoadError(String(e));
@@ -191,7 +220,7 @@ function CanvasInner() {
       )
       .catch((e: unknown) => {
         if (e instanceof UnauthorizedError) {
-          setUnlockError("Invalid API key");
+          setUnlockError("Your session expired -- please sign in again.");
           setNeedsUnlock(true);
         } else {
           console.error("Failed to load connections for node badges:", e);
@@ -211,7 +240,7 @@ function CanvasInner() {
       .then(setSavedGraphs)
       .catch((e: unknown) => {
         if (e instanceof UnauthorizedError) {
-          setUnlockError("Invalid API key");
+          setUnlockError("Your session expired -- please sign in again.");
           setNeedsUnlock(true);
         } else {
           console.error("Failed to load saved graphs list:", e);
@@ -762,35 +791,30 @@ function CanvasInner() {
     }
   }
 
-  function handleUnlockSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!unlockDraft.trim()) return;
-    setApiKey(unlockDraft.trim());
-    setUnlockDraft("");
-    setUnlockError(null);
-    setNeedsUnlock(false);
+  function handleGoogleSignIn() {
+    // A real top-level navigation, not a fetch() -- Google's consent screen
+    // has to render in the actual tab. redirect_to is where the backend
+    // sends the browser back once the round trip with Google completes.
+    window.location.href = googleLoginUrl(window.location.origin + window.location.pathname);
   }
 
-  // spec-017: a minimal login gate -- the whole canvas is meaningless
+  // spec-017/020: a minimal login gate -- the whole canvas is meaningless
   // without a credential, so this is an early return, not a modal layered
-  // over a half-loaded app.
+  // over a half-loaded app. spec-020: sign-in is now a real Google OAuth
+  // redirect rather than typing in the shared key directly.
   if (needsUnlock) {
     return (
       <div className="unlock-overlay">
-        <form className="unlock-overlay__form" onSubmit={handleUnlockSubmit}>
+        <div className="unlock-overlay__form">
           <h1>Agent Graph Studio</h1>
-          <label htmlFor="unlock-key">API key</label>
-          <input
-            id="unlock-key"
-            type="password"
-            autoFocus
-            value={unlockDraft}
-            onChange={(e) => setUnlockDraft(e.target.value)}
-            placeholder="Enter the API key"
-          />
-          <button type="submit">Unlock</button>
+          <p className="history-panel__empty">
+            Sign in with an invited Google account to continue.
+          </p>
+          <button type="button" onClick={handleGoogleSignIn}>
+            Sign in with Google
+          </button>
           {unlockError && <div className="unlock-overlay__error">{unlockError}</div>}
-        </form>
+        </div>
       </div>
     );
   }

@@ -59,6 +59,10 @@ class RunRow:
     finished_at: str | None
     result_json: str | None
     error: str | None
+    run_by: str | None = None
+    """spec-020: the user id who submitted this run, None for a
+    schedule/webhook-triggered run (no human initiator) or a run from
+    before this spec."""
 
 
 @dataclass
@@ -86,11 +90,23 @@ def runs_db_path() -> Path:
     return Path.home() / ".agent-graph-studio" / "runs.db"
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str) -> None:
+    """spec-020: mirrors backend/storage/graphs_store.py's identical
+    helper -- see its docstring for why this is deliberately minimal
+    rather than a real migration framework."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e).lower():
+            raise
+
+
 def _connect(path: Path | None = None) -> sqlite3.Connection:
     target = path or runs_db_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(target, timeout=5.0)
     conn.execute(_SCHEMA)
+    _add_column_if_missing(conn, "runs", "run_by", "TEXT")
     return conn
 
 
@@ -99,6 +115,7 @@ def create_run_record(
     graph_id: str | None,
     trigger_source: str,
     started_at: str,
+    run_by: str | None = None,
     path: Path | None = None,
 ) -> None:
     """Inserts the initial "running" row. Failure here is logged, not
@@ -107,9 +124,9 @@ def create_run_record(
     try:
         with _connect(path) as conn:
             conn.execute(
-                "INSERT INTO runs (run_id, graph_id, status, trigger_source, started_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (run_id, graph_id, "running", trigger_source, started_at),
+                "INSERT INTO runs (run_id, graph_id, status, trigger_source, started_at, run_by) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, graph_id, "running", trigger_source, started_at, run_by),
             )
     except sqlite3.Error:
         logger.exception("Failed to persist run start for run_id=%s", run_id)
@@ -141,7 +158,7 @@ def get_run_record(run_id: str, path: Path | None = None) -> RunRow | None:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT run_id, graph_id, status, trigger_source, started_at, finished_at, "
-            "result_json, error FROM runs WHERE run_id = ?",
+            "result_json, error, run_by FROM runs WHERE run_id = ?",
             (run_id,),
         ).fetchone()
     if row is None:

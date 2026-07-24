@@ -12,6 +12,8 @@ dependencies = [
     "apscheduler>=3.11.3",
     "sqlite-vec>=0.1.9",
     "cryptography>=41",
+    "pyjwt>=2.9",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

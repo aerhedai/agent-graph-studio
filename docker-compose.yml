@@ -19,12 +19,17 @@ services:
       AGENT_GRAPH_STUDIO_CONNECTIONS_PATH: /data/.agent-graph-studio/connections.json
       AGENT_GRAPH_STUDIO_RUNS_DB_PATH: /data/.agent-graph-studio/runs.db
       AGENT_GRAPH_STUDIO_GRAPHS_DB_PATH: /data/.agent-graph-studio/graphs.db
-      # spec-017: required, no default -- the backend refuses to start
-      # without them. Set both in your shell or a .env file next to this
+      AGENT_GRAPH_STUDIO_USERS_DB_PATH: /data/.agent-graph-studio/users.db
+      # spec-017/020: required, no default -- the backend refuses to start
+      # without them. Set all in your shell or a .env file next to this
       # compose file (Compose substitutes ${VAR} from either automatically)
       # before running `docker compose up`; see docs/DEPLOYMENT.md.
       AGENT_GRAPH_STUDIO_ENCRYPTION_KEY: ${AGENT_GRAPH_STUDIO_ENCRYPTION_KEY:?set this before running compose up -- see docs/DEPLOYMENT.md}
       AGENT_GRAPH_STUDIO_API_KEY: ${AGENT_GRAPH_STUDIO_API_KEY:?set this before running compose up -- see docs/DEPLOYMENT.md}
+      AGENT_GRAPH_STUDIO_JWT_SECRET: ${AGENT_GRAPH_STUDIO_JWT_SECRET:?set this before running compose up -- see docs/DEPLOYMENT.md}
+      AGENT_GRAPH_STUDIO_GOOGLE_CLIENT_ID: ${AGENT_GRAPH_STUDIO_GOOGLE_CLIENT_ID:?set this before running compose up -- see docs/DEPLOYMENT.md}
+      AGENT_GRAPH_STUDIO_GOOGLE_CLIENT_SECRET: ${AGENT_GRAPH_STUDIO_GOOGLE_CLIENT_SECRET:?set this before running compose up -- see docs/DEPLOYMENT.md}
+      AGENT_GRAPH_STUDIO_ADMIN_EMAIL: ${AGENT_GRAPH_STUDIO_ADMIN_EMAIL:?set this before running compose up -- see docs/DEPLOYMENT.md}
 
   frontend:
     build:

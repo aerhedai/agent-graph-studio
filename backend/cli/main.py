@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sys
 
+from dotenv import load_dotenv
+
 import backend.connections  # noqa: F401 -- import side effect registers every connection type
 import backend.nodes  # noqa: F401 -- import side effect registers the 4 MVP node types
 from backend.connections.errors import ConnectionNotFoundError
@@ -14,6 +16,12 @@ from backend.validation.validator import validate_graph
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Loads ./.env for local `uv run agent-graph-studio ...` use, same as
+    # backend/api/app.py -- the connections store needs
+    # AGENT_GRAPH_STUDIO_ENCRYPTION_KEY (and optionally
+    # AGENT_GRAPH_STUDIO_CONNECTIONS_PATH) regardless of which entry point
+    # reads it.
+    load_dotenv()
     argv = argv if argv is not None else sys.argv[1:]
     if len(argv) != 1:
         print("Usage: agent-graph-studio <graph.json>", file=sys.stderr)
