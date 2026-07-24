@@ -113,3 +113,53 @@ def verify_state_token(token: str) -> str | None:
     if payload.get("typ") != "oauth_state":
         return None
     return payload.get("redirect_to")
+
+
+@dataclass(frozen=True)
+class McpOAuthStateClaims:
+    user_id: str
+    connection_name: str
+    code_verifier: str
+    redirect_to: str
+
+
+def issue_mcp_oauth_state_token(
+    user_id: str, connection_name: str, code_verifier: str, redirect_to: str
+) -> str:
+    """spec-021: the per-user MCP OAuth connect flow's equivalent of
+    issue_state_token above -- a distinct `typ` (never accepted as a login
+    state token or a session token, matching verify_token's existing
+    cross-purpose rejection) carrying everything the callback needs:
+    which user initiated this, which connection it's for, and the PKCE
+    code_verifier (not secret in the way a client_secret is -- PKCE's whole
+    design assumes it's safe to round-trip through the browser/state token
+    this same way) needed to complete the code exchange."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "typ": "mcp_oauth_state",
+        "user_id": user_id,
+        "connection_name": connection_name,
+        "code_verifier": code_verifier,
+        "redirect_to": redirect_to,
+        "iat": now,
+        "exp": now + timedelta(minutes=STATE_TOKEN_EXPIRES_MINUTES),
+    }
+    return pyjwt.encode(payload, _jwt_secret(), algorithm=ALGORITHM)
+
+
+def verify_mcp_oauth_state_token(token: str) -> McpOAuthStateClaims | None:
+    try:
+        payload = pyjwt.decode(token, _jwt_secret(), algorithms=[ALGORITHM])
+    except pyjwt.InvalidTokenError:
+        return None
+    if payload.get("typ") != "mcp_oauth_state":
+        return None
+    try:
+        return McpOAuthStateClaims(
+            user_id=payload["user_id"],
+            connection_name=payload["connection_name"],
+            code_verifier=payload["code_verifier"],
+            redirect_to=payload["redirect_to"],
+        )
+    except KeyError:
+        return None

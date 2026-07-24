@@ -17,7 +17,7 @@ from typing import Any
 
 from backend.connections.base import ConnectionRegistry, default_connection_registry
 from backend.connections.errors import ConnectionNotFoundError
-from backend.connections.store import ConnectionProfile, get_connection
+from backend.connections.store import ConnectionProfile, resolve_connection_for_user
 from backend.schema.models import GraphSpec
 
 
@@ -39,14 +39,37 @@ def _referenced_connection_names(graph: GraphSpec) -> set[str]:
     return names
 
 
+def _resolve_slot_aware(
+    name: str, user_id: str | None, slot_mappings: dict[str, str] | None, path: Path | None
+) -> ConnectionProfile | None:
+    """spec-021: if `name` is a declared slot this user has already mapped
+    (shared graph, non-author runner), resolves *their* mapped connection
+    instead of the literal name found in the graph's own config -- the
+    node's config still names the author's connection; only what that name
+    resolves to, for this particular runner, changes. A private graph (or
+    an author running their own shared graph) has no mapping for `name`,
+    so this is a no-op and behaves exactly like resolve_connection_for_user
+    alone."""
+    actual_name = slot_mappings.get(name, name) if slot_mappings else name
+    return resolve_connection_for_user(actual_name, user_id, path=path)
+
+
 def resolve_connections(
     graph: GraphSpec,
     path: Path | None = None,
     registry: ConnectionRegistry = default_connection_registry,
+    user_id: str | None = None,
+    slot_mappings: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    """spec-021: `user_id` is the running caller's own id (None for a
+    shared-key/trigger-fired caller) -- resolution prefers that caller's
+    own connection of the referenced name, falling back to a global one,
+    via `resolve_connection_for_user` (same policy `check_missing_
+    connections` already uses for its pre-flight existence check).
+    `slot_mappings`: see _resolve_slot_aware above."""
     resolved: dict[str, Any] = {}
     for name in _referenced_connection_names(graph):
-        profile = get_connection(name, path=path)
+        profile = _resolve_slot_aware(name, user_id, slot_mappings, path)
         if profile is None:
             raise ConnectionNotFoundError(name)
         definition = registry.get(profile.type)
@@ -58,7 +81,10 @@ def resolve_connections(
 
 
 def resolve_connection_profiles(
-    graph: GraphSpec, path: Path | None = None
+    graph: GraphSpec,
+    path: Path | None = None,
+    user_id: str | None = None,
+    slot_mappings: dict[str, str] | None = None,
 ) -> dict[str, ConnectionProfile]:
     """spec-008 §5: raw type+config (not a built client) for every
     connection referenced in the graph -- `agent`'s complete_with_tools
@@ -67,10 +93,11 @@ def resolve_connection_profiles(
     tool-calling is a materially different API shape (chat/messages) from
     what AnthropicLLMClient/OllamaLLMClient already implement. Kept
     separate from resolve_connections so llm_call's existing resolution
-    path is completely untouched."""
+    path is completely untouched. `user_id`/`slot_mappings`: see
+    resolve_connections above."""
     resolved: dict[str, ConnectionProfile] = {}
     for name in _referenced_connection_names(graph):
-        profile = get_connection(name, path=path)
+        profile = _resolve_slot_aware(name, user_id, slot_mappings, path)
         if profile is None:
             raise ConnectionNotFoundError(name)
         resolved[name] = profile

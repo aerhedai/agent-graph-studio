@@ -86,6 +86,32 @@ def isolated_users_db(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_GRAPH_STUDIO_USERS_DB_PATH", str(tmp_path / "users.db"))
 
 
+@pytest.fixture(autouse=True)
+def isolated_mcp_oauth_tokens_db(tmp_path, monkeypatch):
+    """Every test gets its own empty, throwaway MCP OAuth token database --
+    no test may ever read or write the real
+    ~/.agent-graph-studio/mcp_oauth_tokens.db (spec-021). Mirrors
+    isolated_graphs_db above exactly. A real, standing gap until now:
+    every mcp_server-OAuth test called backend/mcp/oauth_flow.py's
+    store_token_response/get_valid_access_token through the real API
+    routes (mcp_connection_oauth_callback etc.), which never threaded a
+    `path=` override -- silently writing encrypted rows to the real file,
+    readable only under whatever encryption key that specific test
+    happened to get from isolated_encryption_key. A later test with a
+    different random key would then fail to decrypt a leftover row from an
+    earlier one -- exactly the InvalidToken failure that surfaced this."""
+    monkeypatch.setenv("AGENT_GRAPH_STUDIO_MCP_OAUTH_TOKENS_DB_PATH", str(tmp_path / "mcp_oauth_tokens.db"))
+
+
+@pytest.fixture(autouse=True)
+def isolated_graph_sharing_db(tmp_path, monkeypatch):
+    """Every test gets its own empty, throwaway graph-sharing database --
+    no test may ever read or write the real
+    ~/.agent-graph-studio/graph_sharing.db (spec-021). Mirrors
+    isolated_graphs_db above exactly."""
+    monkeypatch.setenv("AGENT_GRAPH_STUDIO_GRAPH_SHARING_DB_PATH", str(tmp_path / "graph_sharing.db"))
+
+
 # spec-020: three new required secrets, none of which any pre-existing test
 # needs to know or care about individually -- every existing
 # TestClient(app, headers={"Authorization": f"Bearer {TEST_API_KEY}"}) test

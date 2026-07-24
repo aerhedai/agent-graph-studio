@@ -27,16 +27,20 @@ import {
   listActiveGraphs,
   listGraphs,
   listRuns,
+  NeedsConnectionMappingError,
   pollRun,
   resolveApproval,
   setApiKey,
+  setConnectionMapping,
   submitRun,
   UnauthorizedError,
   updateGraph,
 } from "../api/client";
 import type {
+  ConnectionSlotSpec,
   GraphSpec,
   GraphSummary,
+  MissingSlotInfo,
   NodeTypeInfo,
   RunStatusResponse,
   TriggerInfo,
@@ -149,6 +153,21 @@ function CanvasInner() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [savedGraphs, setSavedGraphs] = useState<GraphSummary[]>([]);
+  // spec-021: "shared" lets a non-author user run this graph with their own
+  // connections instead of the author's, once they've mapped each declared
+  // slot -- see connectionSlots/missingSlots below.
+  const [sharing, setSharing] = useState<"private" | "shared">("private");
+  const [connectionSlots, setConnectionSlots] = useState<ConnectionSlotSpec[]>([]);
+  const [showSharingPanel, setShowSharingPanel] = useState(false);
+  // Populated when submitRun comes back 409 -- the exact slots this caller
+  // still needs to map before this shared graph will run for them.
+  const [missingSlots, setMissingSlots] = useState<MissingSlotInfo[]>([]);
+  const [slotMappingDrafts, setSlotMappingDrafts] = useState<Record<string, string>>({});
+  const [mappingError, setMappingError] = useState<string | null>(null);
+  const [mappingInProgress, setMappingInProgress] = useState(false);
+  // spec-021: result of an mcp_server connection's own OAuth connect flow,
+  // read from the return redirect's URL fragment (see the effect below).
+  const [mcpOAuthMessage, setMcpOAuthMessage] = useState<string | null>(null);
   const [activation, setActivation] = useState<"inactive" | "activating" | "active" | "deactivating">(
     "inactive",
   );
@@ -178,6 +197,11 @@ function CanvasInner() {
     const params = new URLSearchParams(window.location.hash.slice(1));
     const token = params.get("token");
     const authError = params.get("auth_error");
+    // spec-021: an mcp_server connection's own OAuth connect flow
+    // (ConnectionPicker's "Connect" button) returns here the same way --
+    // a real browser redirect, fragment-delivered, never a query param.
+    const mcpOAuthConnected = params.get("mcp_oauth_connected");
+    const mcpOAuthError = params.get("mcp_oauth_error");
     if (token) {
       setApiKey(token);
       setUnlockError(null);
@@ -188,8 +212,12 @@ function CanvasInner() {
           ? "That Google account hasn't been invited to Agent Graph Studio."
           : `Sign-in failed: ${authError}`,
       );
+    } else if (mcpOAuthConnected) {
+      setMcpOAuthMessage(`"${mcpOAuthConnected}" connected -- its tools are ready to use.`);
+    } else if (mcpOAuthError) {
+      setMcpOAuthMessage(`Connecting failed: ${mcpOAuthError}`);
     }
-    if (token || authError) {
+    if (token || authError || mcpOAuthConnected || mcpOAuthError) {
       window.history.replaceState(null, "", window.location.pathname + window.location.search);
     }
   }, []);
@@ -639,14 +667,48 @@ function CanvasInner() {
   async function handleRun() {
     setIsSubmitting(true);
     setRunError(null);
+    setMissingSlots([]);
     try {
       const graph = nodesAndEdgesToGraphSpec(nodes, edges);
       const submitted = await submitRun(graph, savedGraphId ?? undefined);
       attachToRun(submitted.run_id);
     } catch (e) {
-      setRunError(String(e));
+      if (e instanceof NeedsConnectionMappingError) {
+        // spec-021: a shared graph this caller hasn't fully mapped yet --
+        // show the mapping prompt instead of a plain error.
+        setMissingSlots(e.missingSlots);
+        setSlotMappingDrafts({});
+        setMappingError(null);
+      } else {
+        setRunError(String(e));
+      }
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  // spec-021: submits this caller's picks for every currently-missing slot,
+  // then retries the run once -- a successful mapping is remembered
+  // server-side, so every run after this one just works.
+  async function handleMapSlotsAndRun() {
+    if (savedGraphId === null) return;
+    setMappingInProgress(true);
+    setMappingError(null);
+    try {
+      for (const slot of missingSlots) {
+        const connectionName = slotMappingDrafts[slot.slot_name];
+        if (!connectionName) {
+          setMappingError(`Pick a connection for '${slot.slot_name}' first.`);
+          return;
+        }
+        await setConnectionMapping(savedGraphId, slot.slot_name, connectionName);
+      }
+      setMissingSlots([]);
+      await handleRun();
+    } catch (e) {
+      setMappingError(String(e));
+    } finally {
+      setMappingInProgress(false);
     }
   }
 
@@ -660,11 +722,11 @@ function CanvasInner() {
     try {
       const graph = nodesAndEdgesToGraphSpec(nodes, edges);
       if (savedGraphId === null) {
-        const created = await createGraph(graphName, graph);
+        const created = await createGraph(graphName, graph, sharing, connectionSlots);
         setSavedGraphId(created.graph_id);
         return created.graph_id;
       }
-      await updateGraph(savedGraphId, { name: graphName, spec: graph });
+      await updateGraph(savedGraphId, { name: graphName, spec: graph, sharing, connectionSlots });
       return savedGraphId;
     } catch (e) {
       setSaveError(String(e));
@@ -697,6 +759,9 @@ function CanvasInner() {
       setRunError(null);
       setSavedGraphId(detail.graph_id);
       setGraphName(detail.name);
+      setSharing(detail.sharing);
+      setConnectionSlots(detail.connection_slots);
+      setMissingSlots([]);
       if (pollTimeoutRef.current !== null) window.clearTimeout(pollTimeoutRef.current);
       window.setTimeout(() => loadedNodes.forEach((n) => updateNodeInternals(n.id)), 0);
 
@@ -861,6 +926,14 @@ function CanvasInner() {
             >
               {saving ? "Saving..." : "Save"}
             </button>
+            <button
+              type="button"
+              className="run-bar__secondary"
+              onClick={() => setShowSharingPanel((v) => !v)}
+              title="Let other users run this graph with their own connections"
+            >
+              {sharing === "shared" ? "Shared" : "Private"}
+            </button>
             <span className="select-wrap">
               <select
                 value=""
@@ -946,6 +1019,11 @@ function CanvasInner() {
               </span>
             )}
             {run && <span className={`run-bar__status status-${run.status}`}>{run.status}</span>}
+            {mcpOAuthMessage && (
+              <span className="run-bar__error" onClick={() => setMcpOAuthMessage(null)} title="Dismiss">
+                {mcpOAuthMessage}
+              </span>
+            )}
             {runError && <span className="run-bar__error">{runError}</span>}
             {loadError && <span className="run-bar__error">{loadError}</span>}
             {saveError && <span className="run-bar__error">{saveError}</span>}
@@ -961,6 +1039,110 @@ function CanvasInner() {
               Settings
             </button>
           </div>
+          {showSharingPanel && (
+            // spec-021: declaring a graph shared lets a non-author user run
+            // it with their own connections -- each slot names a connection
+            // reference literally used in this graph's node config (e.g.
+            // "my-gmail") plus its connection type, so a runner's picker
+            // can filter to compatible connections.
+            <div className="approval-banner">
+              <label className="approval-banner__remember">
+                <input
+                  type="checkbox"
+                  checked={sharing === "shared"}
+                  onChange={(e) => setSharing(e.target.checked ? "shared" : "private")}
+                />
+                Shared -- other users can run this graph with their own connections
+              </label>
+              {sharing === "shared" && (
+                <>
+                  {connectionSlots.map((slot, i) => (
+                    <div key={i} className="approval-banner__item">
+                      <input
+                        type="text"
+                        placeholder="Slot name (e.g. my-gmail, matches a node's connection field)"
+                        value={slot.slot_name}
+                        onChange={(e) =>
+                          setConnectionSlots((prev) =>
+                            prev.map((s, j) => (j === i ? { ...s, slot_name: e.target.value } : s)),
+                          )
+                        }
+                      />
+                      <input
+                        type="text"
+                        placeholder="Connection type (e.g. anthropic, mcp_server)"
+                        value={slot.connection_type}
+                        onChange={(e) =>
+                          setConnectionSlots((prev) =>
+                            prev.map((s, j) => (j === i ? { ...s, connection_type: e.target.value } : s)),
+                          )
+                        }
+                      />
+                      <button
+                        type="button"
+                        className="run-bar__secondary"
+                        onClick={() => setConnectionSlots((prev) => prev.filter((_, j) => j !== i))}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    className="run-bar__secondary"
+                    onClick={() => setConnectionSlots((prev) => [...prev, { slot_name: "", connection_type: "" }])}
+                  >
+                    + Add slot
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+          {missingSlots.length > 0 && (
+            // spec-021: POST /runs came back 409 -- this caller hasn't
+            // mapped one or more of this shared graph's declared slots yet.
+            // Picking one of their own connections here, once, is
+            // remembered server-side for every future run.
+            <div className="approval-banner">
+              <span className="approval-banner__text">
+                This shared graph needs your own connections mapped before it can run:
+              </span>
+              {missingSlots.map((slot) => (
+                <div key={slot.slot_name} className="approval-banner__item">
+                  <span className="approval-banner__text">
+                    {slot.slot_name} ({slot.connection_type})
+                  </span>
+                  <span className="select-wrap">
+                    <select
+                      value={slotMappingDrafts[slot.slot_name] ?? ""}
+                      onChange={(e) =>
+                        setSlotMappingDrafts((prev) => ({ ...prev, [slot.slot_name]: e.target.value }))
+                      }
+                    >
+                      <option value="" disabled>
+                        Choose your connection...
+                      </option>
+                      {Object.entries(connectionTypeByName)
+                        .filter(([, type]) => type === slot.connection_type)
+                        .map(([name]) => (
+                          <option key={name} value={name}>
+                            {name}
+                          </option>
+                        ))}
+                    </select>
+                  </span>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => void handleMapSlotsAndRun()}
+                disabled={mappingInProgress}
+              >
+                {mappingInProgress ? "Mapping..." : "Map & Run"}
+              </button>
+              {mappingError && <span className="run-bar__error">{mappingError}</span>}
+            </div>
+          )}
           {run && run.pending_approvals.length > 0 && (
             // spec-019: an approval-gated tool call is blocked mid-run,
             // waiting on a decision that used to only be answerable via a

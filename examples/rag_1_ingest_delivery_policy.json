@@ -1,0 +1,33 @@
+{
+  "version": "0.1",
+  "nodes": [
+    {
+      "id": "policy_doc",
+      "type": "text_input",
+      "config": {
+        "value": "Damaged package policy: if an item arrives damaged, the customer has 30 days from delivery to request a replacement, no receipt required. Replacements ship free via express. Late delivery policy: if a package is more than 2 days past its estimated delivery window, the customer is eligible for a 10 percent credit on that order, applied automatically at request. Lost package policy: a package is considered lost if it has shown no tracking movement for 7 consecutive days; the customer may request a full refund or a reshipment."
+      }
+    },
+    {
+      "id": "ingest",
+      "type": "ingest_document",
+      "config": {
+        "connection": "delivery-policy-store",
+        "embedding_model_connection": "my-pc-ollama-canvas",
+        "embedding_model": "nomic-embed-text",
+        "chunk_size": 200,
+        "chunk_overlap": 30,
+        "document_name": "delivery-support-policy"
+      }
+    },
+    {
+      "id": "confirmation",
+      "type": "text_output",
+      "config": {}
+    }
+  ],
+  "edges": [
+    { "from": { "node": "policy_doc", "slot": "text" }, "to": { "node": "ingest", "slot": "text" } },
+    { "from": { "node": "ingest", "slot": "chunks_stored" }, "to": { "node": "confirmation", "slot": "text" } }
+  ]
+}

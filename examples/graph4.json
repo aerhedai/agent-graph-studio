@@ -1,0 +1,78 @@
+{
+  "version": "0.1",
+  "nodes": [
+    {
+      "id": "mcp__filesystem-tools__list_directory_1",
+      "type": "mcp__filesystem-tools__list_directory",
+      "config": {}
+    },
+    {
+      "id": "tool_group_2",
+      "type": "tool_group",
+      "config": {}
+    },
+    {
+      "id": "agent_3",
+      "type": "agent",
+      "config": {}
+    },
+    {
+      "id": "model_4",
+      "type": "model",
+      "config": {
+        "connection": "my-pc-ollama-canvas",
+        "model": "gemma4:latest",
+        "system_prompt": "You are an Ai directory assistant, Use tools to provide me with answers to questions."
+      }
+    },
+    {
+      "id": "text_input_5",
+      "type": "text_input",
+      "config": {
+        "value": "Can you list all directories?"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "kind": "sub_node",
+      "slot": "tools",
+      "from": {
+        "node": "mcp__filesystem-tools__list_directory_1"
+      },
+      "to": {
+        "node": "tool_group_2"
+      }
+    },
+    {
+      "kind": "sub_node",
+      "slot": "tools",
+      "from": {
+        "node": "tool_group_2"
+      },
+      "to": {
+        "node": "agent_3"
+      }
+    },
+    {
+      "kind": "sub_node",
+      "slot": "model",
+      "from": {
+        "node": "model_4"
+      },
+      "to": {
+        "node": "agent_3"
+      }
+    },
+    {
+      "from": {
+        "node": "text_input_5",
+        "slot": "text"
+      },
+      "to": {
+        "node": "agent_3",
+        "slot": "task"
+      }
+    }
+  ]
+}

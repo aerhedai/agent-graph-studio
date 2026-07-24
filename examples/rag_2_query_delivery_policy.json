@@ -1,0 +1,29 @@
+{
+  "version": "0.1",
+  "nodes": [
+    {
+      "id": "question",
+      "type": "text_input",
+      "config": { "value": "My package arrived broken, what can I do?" }
+    },
+    {
+      "id": "search",
+      "type": "vector_search",
+      "config": {
+        "connection": "delivery-policy-store",
+        "embedding_model_connection": "my-pc-ollama-canvas",
+        "embedding_model": "nomic-embed-text",
+        "top_k": 2
+      }
+    },
+    {
+      "id": "results",
+      "type": "text_output",
+      "config": {}
+    }
+  ],
+  "edges": [
+    { "from": { "node": "question", "slot": "text" }, "to": { "node": "search", "slot": "query" } },
+    { "from": { "node": "search", "slot": "results" }, "to": { "node": "results", "slot": "text" } }
+  ]
+}

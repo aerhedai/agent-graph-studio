@@ -59,6 +59,11 @@ class GraphRow:
     """spec-020: the user id who created this graph, None for a graph
     created before this spec (or via a shared-API-key/system call with no
     human initiator)."""
+    sharing: str = "private"
+    """spec-021: "private" (default, unchanged behavior) or "shared" -- a
+    shared graph's declared connection slots (backend/storage/
+    graph_sharing_store.py) let a non-author user run it using their own
+    connections instead of the author's."""
 
 
 @dataclass
@@ -70,6 +75,7 @@ class GraphSummaryRow:
     name: str
     is_active: bool
     updated_at: str
+    sharing: str = "private"
 
 
 def graphs_db_path() -> Path:
@@ -101,6 +107,7 @@ def _connect(path: Path | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(target, timeout=5.0)
     conn.execute(_SCHEMA)
     _add_column_if_missing(conn, "graphs", "created_by", "TEXT")
+    _add_column_if_missing(conn, "graphs", "sharing", "TEXT NOT NULL DEFAULT 'private'")
     return conn
 
 
@@ -116,13 +123,14 @@ def create_graph(
     spec_json: str,
     created_at: str,
     created_by: str | None = None,
+    sharing: str = "private",
     path: Path | None = None,
 ) -> GraphRow:
     with _connect(path) as conn:
         conn.execute(
-            "INSERT INTO graphs (graph_id, name, spec_json, is_active, created_at, updated_at, created_by) "
-            "VALUES (?, ?, ?, 0, ?, ?, ?)",
-            (graph_id, name, spec_json, created_at, created_at, created_by),
+            "INSERT INTO graphs (graph_id, name, spec_json, is_active, created_at, updated_at, created_by, sharing) "
+            "VALUES (?, ?, ?, 0, ?, ?, ?, ?)",
+            (graph_id, name, spec_json, created_at, created_at, created_by, sharing),
         )
     return GraphRow(
         graph_id=graph_id,
@@ -132,6 +140,7 @@ def create_graph(
         created_at=created_at,
         updated_at=created_at,
         created_by=created_by,
+        sharing=sharing,
     )
 
 
@@ -139,7 +148,7 @@ def get_graph(graph_id: str, path: Path | None = None) -> GraphRow | None:
     with _connect(path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT graph_id, name, spec_json, is_active, created_at, updated_at, created_by "
+            "SELECT graph_id, name, spec_json, is_active, created_at, updated_at, created_by, sharing "
             "FROM graphs WHERE graph_id = ?",
             (graph_id,),
         ).fetchone()
@@ -150,7 +159,7 @@ def list_graphs(path: Path | None = None) -> list[GraphSummaryRow]:
     with _connect(path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT graph_id, name, is_active, updated_at FROM graphs ORDER BY updated_at DESC",
+            "SELECT graph_id, name, is_active, updated_at, sharing FROM graphs ORDER BY updated_at DESC",
         ).fetchall()
     return [GraphSummaryRow(**{**dict(r), "is_active": bool(r["is_active"])}) for r in rows]
 
@@ -160,6 +169,7 @@ def update_graph(
     updated_at: str,
     name: str | None = None,
     spec_json: str | None = None,
+    sharing: str | None = None,
     path: Path | None = None,
 ) -> GraphRow | None:
     """Partial update -- only fields actually provided are overwritten.
@@ -169,10 +179,11 @@ def update_graph(
         return None
     new_name = name if name is not None else existing.name
     new_spec_json = spec_json if spec_json is not None else existing.spec_json
+    new_sharing = sharing if sharing is not None else existing.sharing
     with _connect(path) as conn:
         conn.execute(
-            "UPDATE graphs SET name = ?, spec_json = ?, updated_at = ? WHERE graph_id = ?",
-            (new_name, new_spec_json, updated_at, graph_id),
+            "UPDATE graphs SET name = ?, spec_json = ?, updated_at = ?, sharing = ? WHERE graph_id = ?",
+            (new_name, new_spec_json, updated_at, new_sharing, graph_id),
         )
     return GraphRow(
         graph_id=graph_id,
@@ -182,6 +193,7 @@ def update_graph(
         created_at=existing.created_at,
         updated_at=updated_at,
         created_by=existing.created_by,
+        sharing=new_sharing,
     )
 
 
@@ -197,7 +209,7 @@ def list_active_graphs(path: Path | None = None) -> list[GraphRow]:
     with _connect(path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT graph_id, name, spec_json, is_active, created_at, updated_at, created_by "
+            "SELECT graph_id, name, spec_json, is_active, created_at, updated_at, created_by, sharing "
             "FROM graphs WHERE is_active = 1",
         ).fetchall()
     return [_row_to_graph(r) for r in rows]

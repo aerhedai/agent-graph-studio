@@ -8,7 +8,17 @@ connection secrets (bot tokens, API keys) no longer sit in plaintext on
 disk. A pre-spec-017 plaintext file is auto-migrated: the first read that
 fails to decrypt falls back to legacy json.loads, then immediately
 re-persists encrypted -- self-healing, no separate migration command.
-"""
+
+spec-021: `ConnectionProfile.user_id` -- `None` means a global/shared
+connection, visible to and usable by every user (today's exact behavior,
+preserved unchanged for Ollama/Anthropic/Telegram/manually-configured
+mcp_server connections and any shared-API-key caller). A real user id means
+that connection is private to that user (the mechanism a per-user
+OAuth-authenticated mcp_server connection, or any connection a user simply
+chooses to keep private, uses). Uniqueness is on `(user_id, name)`, not
+`name` alone -- two different users may each have their own connection
+named e.g. "my-gmail" with no collision, and a user's own connection may
+share a name with an unrelated global one."""
 
 from __future__ import annotations
 
@@ -27,6 +37,7 @@ class ConnectionProfile(BaseModel):
     name: str
     type: str
     config: dict[str, Any] = Field(default_factory=dict)
+    user_id: str | None = None
 
 
 def connections_path() -> Path:
@@ -93,30 +104,92 @@ def _save_all(profiles: list[ConnectionProfile], path: Path | None = None) -> No
     target.write_bytes(_fernet().encrypt(plaintext.encode()))
 
 
-def list_connections(path: Path | None = None) -> list[ConnectionProfile]:
+def list_connections(user_id: str | None = None, path: Path | None = None) -> list[ConnectionProfile]:
+    """A caller's own connections (if `user_id` given) plus every global
+    (`user_id=None`) connection -- the "what can this caller pick from"
+    view (canvas picker, `GET /connections`). An unauthenticated/shared-key
+    caller (`user_id=None`) sees only global connections, exactly today's
+    pre-spec-021 behavior. For "every connection regardless of owner", see
+    `list_connections_unscoped` -- used only by startup node-type
+    regeneration, which must not miss another user's mcp_server
+    connections."""
+    all_profiles = _load_all(path)
+    if user_id is None:
+        return [c for c in all_profiles if c.user_id is None]
+    return [c for c in all_profiles if c.user_id == user_id or c.user_id is None]
+
+
+def list_connections_unscoped(path: Path | None = None) -> list[ConnectionProfile]:
     return _load_all(path)
 
 
-def get_connection(name: str, path: Path | None = None) -> ConnectionProfile | None:
-    return next((c for c in _load_all(path) if c.name == name), None)
+def get_connection(name: str, user_id: str | None = None, path: Path | None = None) -> ConnectionProfile | None:
+    """Exact `(user_id, name)` lookup -- `user_id=None` means "the global
+    connection named `name`", not "any connection named `name`". Callers
+    needing "this user's own, falling back to global" resolution semantics
+    (execution-time connection resolution) use `resolve_connection_for_user`
+    instead."""
+    return next((c for c in _load_all(path) if c.name == name and c.user_id == user_id), None)
+
+
+def resolve_connection_for_user(
+    name: str, user_id: str | None, path: Path | None = None
+) -> ConnectionProfile | None:
+    """Execution-time resolution policy (spec-021): prefer `user_id`'s own
+    connection named `name`; fall back to a global connection of the same
+    name. Used wherever a graph is actually being run/introspected for a
+    specific user -- never by the connection-management API endpoints
+    themselves, which operate on exact `(user_id, name)` pairs via
+    `get_connection` so a user can't accidentally "resolve into" someone
+    else's same-named private connection."""
+    if user_id is not None:
+        own = get_connection(name, user_id=user_id, path=path)
+        if own is not None:
+            return own
+    return get_connection(name, user_id=None, path=path)
 
 
 def add_connection(
-    name: str, type_name: str, config: dict[str, Any], path: Path | None = None
+    name: str, type_name: str, config: dict[str, Any], user_id: str | None = None, path: Path | None = None
 ) -> ConnectionProfile:
     profiles = _load_all(path)
-    if any(c.name == name for c in profiles):
+    if any(c.name == name and c.user_id == user_id for c in profiles):
         raise DuplicateConnectionError(name)
-    profile = ConnectionProfile(name=name, type=type_name, config=config)
+    profile = ConnectionProfile(name=name, type=type_name, config=config, user_id=user_id)
     profiles.append(profile)
     _save_all(profiles, path)
     return profile
 
 
-def delete_connection(name: str, path: Path | None = None) -> bool:
+def delete_connection(name: str, user_id: str | None = None, path: Path | None = None) -> bool:
     profiles = _load_all(path)
-    remaining = [c for c in profiles if c.name != name]
+    remaining = [c for c in profiles if not (c.name == name and c.user_id == user_id)]
     if len(remaining) == len(profiles):
         return False
     _save_all(remaining, path)
     return True
+
+
+def update_connection_config(
+    name: str, user_id: str | None, config: dict[str, Any], path: Path | None = None
+) -> ConnectionProfile | None:
+    """spec-021: the first mutation a connection's config can undergo after
+    creation -- every connection type before this was write-once (create,
+    or delete-and-recreate). Needed specifically so an `mcp_server`
+    connection's discovered/registered OAuth client info
+    (`requires_oauth`/`oauth_client_id`/`oauth_client_secret`) can be
+    persisted back onto the connection that triggered discovering it,
+    rather than needing a second, parallel place to store it. Returns None
+    if no connection matches `(user_id, name)`, mirroring get_connection's
+    exact-scope semantics -- never silently creates one."""
+    profiles = _load_all(path)
+    updated: ConnectionProfile | None = None
+    for i, profile in enumerate(profiles):
+        if profile.name == name and profile.user_id == user_id:
+            updated = profile.model_copy(update={"config": config})
+            profiles[i] = updated
+            break
+    if updated is None:
+        return None
+    _save_all(profiles, path)
+    return updated

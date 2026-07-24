@@ -8,12 +8,25 @@ import { Toggle } from "./Toggle";
 // circular dependency (ConfigPanel special-cases the "connection" field
 // into a <ConnectionPicker>, which itself needs this same renderer for its
 // own connection-type-specific fields like api_key/host/port).
+// Pydantic's `X | None` fields have no top-level `type` -- unwrap the
+// standard `anyOf: [{type: X}, {type: "null"}]` shape to find the real
+// underlying type, so an optional string field renders as a normal text
+// input instead of falling through to the raw-JSON fallback (which
+// silently drops a plain-text value, since it isn't valid JSON).
+function effectiveSchema(propSchema: JsonSchemaProperty): JsonSchemaProperty {
+  if (propSchema.type !== undefined || !propSchema.anyOf) return propSchema;
+  const nonNull = propSchema.anyOf.find((branch) => branch.type !== "null");
+  return nonNull ?? propSchema;
+}
+
 export function renderPrimitiveField(
   name: string,
-  propSchema: JsonSchemaProperty,
+  rawPropSchema: JsonSchemaProperty,
   value: unknown,
   setField: (name: string, value: unknown) => void,
 ) {
+  const propSchema = effectiveSchema(rawPropSchema);
+
   if (propSchema.type === "boolean") {
     return (
       <Toggle

@@ -1,0 +1,116 @@
+{
+  "version": "0.1",
+  "nodes": [
+    {
+      "id": "webhook_trigger_1",
+      "type": "webhook_trigger",
+      "config": {}
+    },
+    {
+      "id": "merge_3",
+      "type": "merge",
+      "config": {
+        "expected_input_count": 3
+      }
+    },
+    {
+      "id": "agent_4",
+      "type": "agent",
+      "config": {}
+    },
+    {
+      "id": "model_5",
+      "type": "model",
+      "config": {
+        "connection": "my-pc-ollama-canvas",
+        "model": "gemma4:12b",
+        "system_prompt": "Answer these questions about maths",
+        "max_tokens": 500
+      }
+    },
+    {
+      "id": "text_output_6",
+      "type": "text_output",
+      "config": {}
+    },
+    {
+      "id": "telegram_adapter_8",
+      "type": "telegram_adapter",
+      "config": {
+        "bot_token_connection": "my-telegram-bot"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": {
+        "node": "webhook_trigger_1",
+        "slot": "message_text"
+      },
+      "to": {
+        "node": "merge_3",
+        "slot": "input_1"
+      }
+    },
+    {
+      "from": {
+        "node": "webhook_trigger_1",
+        "slot": "sender_id"
+      },
+      "to": {
+        "node": "merge_3",
+        "slot": "input_2"
+      }
+    },
+    {
+      "from": {
+        "node": "webhook_trigger_1",
+        "slot": "chat_id"
+      },
+      "to": {
+        "node": "merge_3",
+        "slot": "input_3"
+      }
+    },
+    {
+      "from": {
+        "node": "merge_3",
+        "slot": "result"
+      },
+      "to": {
+        "node": "agent_4",
+        "slot": "task"
+      }
+    },
+    {
+      "kind": "sub_node",
+      "slot": "model",
+      "from": {
+        "node": "model_5"
+      },
+      "to": {
+        "node": "agent_4"
+      }
+    },
+    {
+      "from": {
+        "node": "agent_4",
+        "slot": "answer"
+      },
+      "to": {
+        "node": "text_output_6",
+        "slot": "text"
+      }
+    },
+    {
+      "kind": "sub_node",
+      "slot": "trigger_adapter",
+      "from": {
+        "node": "telegram_adapter_8"
+      },
+      "to": {
+        "node": "webhook_trigger_1"
+      }
+    }
+  ]
+}

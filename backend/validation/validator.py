@@ -22,6 +22,8 @@ def validate_graph(
     graph: GraphSpec,
     registry: NodeRegistry = default_registry,
     connections_path: Path | None = None,
+    user_id: str | None = None,
+    slot_mappings: dict[str, str] | None = None,
 ) -> None:
     """Validate a graph against spec §5 (plus spec-006's connection-
     reference check and spec-012's cluster/sub-node checks, which supersede
@@ -42,7 +44,7 @@ def validate_graph(
     issues += check_type_mismatches(graph, registry, valid_edges, unregistered_ids)
     issues += check_cycles(graph, valid_edges)
     issues += check_config_schema(graph, registry, unregistered_ids)
-    issues += check_missing_connections(graph, connections_path)
+    issues += check_missing_connections(graph, connections_path, user_id=user_id, slot_mappings=slot_mappings)
     issues += check_sub_node_edges(graph, registry, unregistered_ids)
 
     if issues:

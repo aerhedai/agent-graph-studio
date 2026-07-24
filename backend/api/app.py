@@ -42,6 +42,7 @@ from backend.api.schemas import (
     ActivateGraphResponse,
     ActiveGraphInfo,
     ConnectionInfo,
+    ConnectionSlotSpec,
     ConnectionTypeInfo,
     CreateConnectionRequest,
     CreateGraphRequest,
@@ -60,8 +61,10 @@ from backend.api.schemas import (
     RunStatusResponse,
     RunSubmitResponse,
     RunSummary,
+    SetSlotMappingRequest,
     SettingsResponse,
     SlotInfo,
+    SlotMappingResponse,
     SubNodeSlotInfo,
     TestConnectionRequest,
     TestConnectionResponse,
@@ -72,19 +75,21 @@ from backend.api.schemas import (
 )
 from backend.connections.base import default_connection_registry
 from backend.connections.errors import ConnectionNotFoundError, DuplicateConnectionError
+from backend.connections.mcp_server_connection import McpServerConnectionConfig
 from backend.connections.resolver import resolve_connection_profiles, resolve_connections
 from backend.connections.store import (
     add_connection,
     delete_connection,
     ensure_encryption_key_configured,
-    get_connection,
     list_connections,
+    resolve_connection_for_user,
+    update_connection_config,
 )
 from backend.execution import approvals
-from backend.mcp import generated_nodes
+from backend.mcp import generated_nodes, oauth_flow, oauth_token_storage
 from backend.registry.base import default_registry, effective_inputs, effective_outputs
 from backend.schema.models import GraphSpec, NodeSpec
-from backend.storage import graphs_store, runs_store, settings_store, users_store
+from backend.storage import graph_sharing_store, graphs_store, runs_store, settings_store, users_store
 from backend.triggers import registry as trigger_registry
 from backend.triggers import runner as trigger_runner
 from backend.triggers import scheduler as trigger_scheduler
@@ -116,10 +121,15 @@ class MissingApiKeyError(RuntimeError):
         )
 
 
-# spec-017/020: paths reachable with no credential at all -- schema/shape
-# only (not data), a health check for container orchestration (SPEC-016),
-# or the two routes a real Google sign-in round trip has to hit before any
-# credential of ours can possibly exist yet.
+# spec-017/020/021: paths reachable with no credential at all -- schema/
+# shape only (not data), a health check for container orchestration
+# (SPEC-016), the two routes a real Google sign-in round trip has to hit
+# before any credential of ours can possibly exist yet, and the MCP OAuth
+# callback (spec-021) -- the browser lands there from the OAuth provider's
+# own redirect, carrying no JWT of ours; its identity comes from the
+# signed state token instead (see mcp_connection_oauth_callback). The
+# *start* of that flow (/connections/oauth/start) deliberately is NOT
+# exempt -- it requires an already-signed-in human, unlike Google login.
 _AUTH_EXEMPT_PATHS = {
     "/health",
     "/docs",
@@ -127,6 +137,7 @@ _AUTH_EXEMPT_PATHS = {
     "/redoc",
     "/auth/google/login",
     "/auth/google/callback",
+    "/connections/oauth/callback",
 }
 
 
@@ -154,6 +165,16 @@ class AuthenticatedUser:
         self.user_id = user_id
         self.email = email
         self.role = role
+
+
+def _caller_user_id(http_request: Request) -> str | None:
+    """spec-021: the one-line `request.state.user.user_id if ... else None`
+    check repeated at every connection/run call site that needs to know
+    which user (if any) is calling -- factored out once it started
+    appearing more than the two spots (created_by/run_by) it was
+    originally written inline for."""
+    user = http_request.state.user
+    return user.user_id if user else None
 
 
 def require_auth(
@@ -506,8 +527,39 @@ def submit_run(
     the run history rather than invented. See docs/specs/010-run-persistence.md
     §8 for why this was resolved as an explicit param rather than assumed.
     """
+    # spec-020: None for a shared-API-key caller (no human initiator) --
+    # same request.state.user convention as POST /graphs's created_by.
+    # spec-021: also the connection-resolution identity -- validate_graph's
+    # missing_connection check and resolve_connections/resolve_connection_
+    # profiles below all need to know whose private connections to consider,
+    # not just global ones.
+    run_by = _caller_user_id(http_request)
+
+    # spec-021: a shared graph run by someone other than its author needs
+    # every declared slot mapped to one of *their own* connections first --
+    # checked before validation even runs, since an unmapped slot isn't a
+    # "graph is invalid" problem, it's a "you haven't set this up yet" one,
+    # with its own structured response naming exactly what's missing.
+    slot_mappings: dict[str, str] = {}
+    if graph_id is not None:
+        graph_row = graphs_store.get_graph(graph_id)
+        if graph_row is not None and graph_row.sharing == "shared" and run_by is not None and run_by != graph_row.created_by:
+            declared_slots = graph_sharing_store.list_slots(graph_id)
+            slot_mappings = graph_sharing_store.get_mappings_for_user(run_by, graph_id)
+            missing = [s for s in declared_slots if s.slot_name not in slot_mappings]
+            if missing:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "This shared graph needs you to map its connection slot(s) before running it.",
+                        "missing_slots": [
+                            {"slot_name": s.slot_name, "connection_type": s.connection_type} for s in missing
+                        ],
+                    },
+                )
+
     try:
-        validate_graph(graph)
+        validate_graph(graph, user_id=run_by, slot_mappings=slot_mappings)
     except GraphValidationError as e:
         raise HTTPException(
             status_code=422,
@@ -518,8 +570,8 @@ def submit_run(
         ) from e
 
     try:
-        resolved_connections = resolve_connections(graph)
-        resolved_connection_profiles = resolve_connection_profiles(graph)
+        resolved_connections = resolve_connections(graph, user_id=run_by, slot_mappings=slot_mappings)
+        resolved_connection_profiles = resolve_connection_profiles(graph, user_id=run_by, slot_mappings=slot_mappings)
     except ConnectionNotFoundError as e:
         # Only reachable via a race (store changed between validate_graph()
         # and here) -- validate_graph()'s missing_connection rule already
@@ -527,15 +579,17 @@ def submit_run(
         raise HTTPException(status_code=422, detail=str(e)) from e
 
     run_id = str(uuid4())
-    # spec-020: None for a shared-API-key caller (no human initiator) --
-    # same request.state.user convention as POST /graphs's created_by.
-    run_by = http_request.state.user.user_id if http_request.state.user else None
     runs.create_run(run_id, graph_id=graph_id, trigger_source="manual", run_by=run_by)
     background_tasks.add_task(
         runs.execute_run,
         run_id,
         graph,
-        {"connections": resolved_connections, "connection_profiles": resolved_connection_profiles},
+        {
+            "connections": resolved_connections,
+            "connection_profiles": resolved_connection_profiles,
+            "running_user_id": run_by,
+            "slot_mappings": slot_mappings,
+        },
     )
     return RunSubmitResponse(run_id=run_id, status="running")
 
@@ -564,20 +618,40 @@ def list_connection_types() -> list[ConnectionTypeInfo]:
     return infos
 
 
+def _connection_info(profile) -> ConnectionInfo:
+    """spec-021: computes requires_oauth/oauth_connected from the profile's
+    own config and (if relevant) the token store -- the one place this
+    logic lives, so every ConnectionInfo returned anywhere can't drift out
+    of sync with the actual OAuth state."""
+    requires_oauth = False
+    oauth_connected = False
+    if profile.type == "mcp_server":
+        config = McpServerConnectionConfig.model_validate(profile.config)
+        requires_oauth = config.requires_oauth
+        if requires_oauth and profile.user_id is not None:
+            oauth_connected = oauth_token_storage.get_token(profile.user_id, profile.name) is not None
+    return ConnectionInfo(
+        name=profile.name, type=profile.type, requires_oauth=requires_oauth, oauth_connected=oauth_connected
+    )
+
+
 @app.get("/connections", response_model=list[ConnectionInfo])
-def list_all_connections() -> list[ConnectionInfo]:
-    return [ConnectionInfo(name=c.name, type=c.type) for c in list_connections()]
+def list_all_connections(http_request: Request) -> list[ConnectionInfo]:
+    # spec-021: this caller's own connections plus every global one -- an
+    # unauthenticated/shared-key caller (user_id=None) sees only global
+    # connections, exactly pre-spec-021 behavior.
+    return [_connection_info(c) for c in list_connections(user_id=_caller_user_id(http_request))]
 
 
 @app.get("/connections/{name}/models", response_model=list[str])
-def list_connection_models(name: str) -> list[str]:
+def list_connection_models(name: str, http_request: Request) -> list[str]:
     """spec-006 §9: real, live models available on this connection's actual
     backend (e.g. Ollama's /api/tags), for the llm_call model-field dropdown.
     Only meaningful for connection types where
     ConnectionTypeInfo.supports_model_listing is true -- the frontend checks
     that first via GET /connection-types rather than trial-and-erroring this
     endpoint against every connection."""
-    profile = get_connection(name)
+    profile = resolve_connection_for_user(name, _caller_user_id(http_request))
     if profile is None:
         raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
 
@@ -596,7 +670,7 @@ def list_connection_models(name: str) -> list[str]:
 
 
 @app.post("/connections", response_model=ConnectionInfo, status_code=201)
-def create_connection(request: CreateConnectionRequest) -> ConnectionInfo:
+def create_connection(request: CreateConnectionRequest, http_request: Request) -> ConnectionInfo:
     definition = default_connection_registry.get(request.type)
     if definition is None:
         raise HTTPException(status_code=422, detail=f"Unknown connection type: {request.type!r}")
@@ -605,30 +679,224 @@ def create_connection(request: CreateConnectionRequest) -> ConnectionInfo:
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Invalid config for '{request.type}': {e}") from e
 
+    # spec-021: saved under the caller's own user id (None for a
+    # shared-API-key caller -- a global connection, exactly pre-spec-021
+    # behavior).
+    owner = _caller_user_id(http_request)
     try:
-        profile = add_connection(request.name, request.type, request.config)
+        profile = add_connection(request.name, request.type, request.config, user_id=owner)
     except DuplicateConnectionError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
 
-    # spec-019: an mcp_server connection's node types are generated once,
-    # here, at creation -- not polled. A discovery failure rolls the
-    # creation back rather than leaving a saved connection with zero
-    # generated capabilities and no signal why (the same fail-closed
-    # instinct as SPEC-018's activation rollback).
     if request.type == "mcp_server":
+        config = McpServerConnectionConfig.model_validate(profile.config)
+        # spec-021: a remote server whose OAuth requirement wasn't already
+        # known (a plain re-save of an already-connected connection has
+        # requires_oauth=True already and skips straight to normal
+        # discovery below) gets probed once, here. If it turns out to
+        # require OAuth, capability generation is deliberately deferred --
+        # no per-user token exists yet, so there's nothing to list tools
+        # with. mcp_connection_oauth_callback (below) generates them for
+        # real once the user actually connects.
+        if config.transport == "remote" and not config.requires_oauth:
+            try:
+                discovered = oauth_flow.discover_oauth_server(config.url)
+            except oauth_flow.McpOAuthError:
+                discovered = None
+            if discovered is not None:
+                client_id, client_secret = config.oauth_client_id, config.oauth_client_secret
+                if client_id is None:
+                    if discovered.registration_endpoint is None:
+                        delete_connection(request.name, user_id=owner)
+                        raise HTTPException(
+                            status_code=422,
+                            detail="This server requires OAuth but doesn't support dynamic client "
+                            "registration -- supply oauth_client_id/oauth_client_secret (from a "
+                            "pre-registered OAuth client for this server) when creating this connection.",
+                        )
+                    public_base_url = settings_store.get_public_base_url()
+                    if not public_base_url:
+                        delete_connection(request.name, user_id=owner)
+                        raise HTTPException(
+                            status_code=422,
+                            detail="No public base URL configured yet -- set one first (see Settings) "
+                            "before connecting an OAuth-requiring MCP server.",
+                        )
+                    try:
+                        client_id, client_secret = oauth_flow.register_client(
+                            discovered.registration_endpoint,
+                            _mcp_oauth_redirect_uri(public_base_url),
+                            config.oauth_scope,
+                        )
+                    except oauth_flow.McpOAuthError as e:
+                        delete_connection(request.name, user_id=owner)
+                        raise HTTPException(
+                            status_code=502, detail=f"Dynamic client registration failed: {e}"
+                        ) from e
+                updated_profile = update_connection_config(
+                    request.name,
+                    owner,
+                    {
+                        **profile.config,
+                        "requires_oauth": True,
+                        "oauth_client_id": client_id,
+                        "oauth_client_secret": client_secret,
+                    },
+                )
+                assert updated_profile is not None  # just written above, under the same (name, owner)
+                return _connection_info(updated_profile)
+
+        # spec-019: an mcp_server connection's node types are generated
+        # once, here, at creation -- not polled. A discovery failure rolls
+        # the creation back rather than leaving a saved connection with
+        # zero generated capabilities and no signal why (the same
+        # fail-closed instinct as SPEC-018's activation rollback).
         try:
-            generated_nodes.generate_node_types_for_connection(request.name)
+            generated_nodes.generate_node_types_for_connection(request.name, owner_user_id=owner)
         except Exception as e:
-            delete_connection(request.name)
+            delete_connection(request.name, user_id=owner)
             raise HTTPException(
                 status_code=502, detail=f"Connection saved config is valid, but tool discovery failed: {e}"
             ) from e
 
-    return ConnectionInfo(name=profile.name, type=profile.type)
+    return _connection_info(profile)
+
+
+def _mcp_oauth_redirect_uri(public_base_url: str) -> str:
+    return f"{public_base_url.rstrip('/')}/connections/oauth/callback"
+
+
+_MCP_OAUTH_STATE_COOKIE = "mcp_oauth_state"
+
+
+@app.get("/connections/oauth/start")
+def mcp_connection_oauth_start(name: str, redirect_to: str, http_request: Request) -> RedirectResponse:
+    """spec-021: begins the per-user OAuth connect flow for an mcp_server
+    connection already flagged requires_oauth=True (set at creation time,
+    see create_connection above). Requires a real signed-in user -- unlike
+    Google's own /auth/google/login (inherently pre-auth), connecting a
+    personal app connection only makes sense for someone already signed
+    into this platform. Mirrors SPEC-020's google_login/google_callback
+    shape exactly (signed short-lived state token, doubled as an httpOnly
+    cookie for CSRF protection, real browser redirect)."""
+    user_id = _caller_user_id(http_request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Sign in before connecting an app.")
+
+    profile = resolve_connection_for_user(name, user_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
+    config = McpServerConnectionConfig.model_validate(profile.config)
+    if not config.requires_oauth:
+        raise HTTPException(status_code=422, detail=f"Connection '{name}' does not require OAuth.")
+    if not config.oauth_client_id:
+        raise HTTPException(status_code=500, detail=f"Connection '{name}' has no OAuth client configured.")
+
+    public_base_url = settings_store.get_public_base_url()
+    if not public_base_url:
+        raise HTTPException(
+            status_code=422,
+            detail="No public base URL configured yet -- set one first (see Settings) before connecting.",
+        )
+
+    try:
+        discovered = oauth_flow.discover_oauth_server(config.url)
+    except oauth_flow.McpOAuthError as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach '{name}''s OAuth server: {e}") from e
+
+    # spec-021: explicit, user-set scope wins (matches what's actually
+    # configured on that operator's OAuth consent screen); falls back to
+    # whatever the server's own discovery advertised as supported.
+    scope = config.oauth_scope or (" ".join(discovered.scopes_supported) if discovered.scopes_supported else None)
+
+    code_verifier, code_challenge = oauth_flow.new_pkce_pair()
+    state = auth_jwt.issue_mcp_oauth_state_token(user_id, name, code_verifier, redirect_to)
+    authorization_url = oauth_flow.build_authorization_url(
+        discovered.authorization_endpoint,
+        client_id=config.oauth_client_id,
+        redirect_uri=_mcp_oauth_redirect_uri(public_base_url),
+        state=state,
+        code_challenge=code_challenge,
+        resource=config.url,
+        scope=scope,
+    )
+    response = RedirectResponse(url=authorization_url, status_code=302)
+    response.set_cookie(
+        _MCP_OAUTH_STATE_COOKIE,
+        state,
+        max_age=auth_jwt.STATE_TOKEN_EXPIRES_MINUTES * 60,
+        httponly=True,
+        samesite="lax",
+    )
+    return response
+
+
+@app.get("/connections/oauth/callback")
+def mcp_connection_oauth_callback(
+    code: str, state: str, mcp_oauth_state: str | None = Cookie(default=None)
+) -> RedirectResponse:
+    """Unauthenticated (see _AUTH_EXEMPT_PATHS) -- the browser lands here
+    from the OAuth provider's own redirect, carrying no JWT of ours.
+    Identity (which user, which connection) comes entirely from the signed
+    state token, exactly like google_callback."""
+    if not mcp_oauth_state or mcp_oauth_state != state:
+        raise HTTPException(status_code=400, detail="OAuth state mismatch -- possible CSRF, please reconnect.")
+    claims = auth_jwt.verify_mcp_oauth_state_token(state)
+    if claims is None:
+        raise HTTPException(status_code=400, detail="OAuth state expired or invalid -- please reconnect.")
+
+    def _error_redirect(message: str) -> RedirectResponse:
+        response = RedirectResponse(
+            url=f"{claims.redirect_to}#mcp_oauth_error={urllib.parse.quote(message)}", status_code=302
+        )
+        response.delete_cookie(_MCP_OAUTH_STATE_COOKIE)
+        return response
+
+    profile = resolve_connection_for_user(claims.connection_name, claims.user_id)
+    if profile is None:
+        return _error_redirect(f"Connection '{claims.connection_name}' no longer exists")
+    config = McpServerConnectionConfig.model_validate(profile.config)
+
+    public_base_url = settings_store.get_public_base_url() or ""
+    try:
+        discovered = oauth_flow.discover_oauth_server(config.url)
+        token_response = oauth_flow.exchange_code_for_token(
+            discovered.token_endpoint,
+            code,
+            _mcp_oauth_redirect_uri(public_base_url),
+            config.oauth_client_id,
+            config.oauth_client_secret,
+            claims.code_verifier,
+        )
+        oauth_flow.store_token_response(
+            claims.user_id,
+            claims.connection_name,
+            token_response,
+            discovered.token_endpoint,
+            config.oauth_client_id,
+            config.oauth_client_secret,
+        )
+    except oauth_flow.McpOAuthError as e:
+        return _error_redirect(str(e))
+
+    # Now that a real token exists, generate this connection's real node
+    # types for the connecting user -- deferred from create_connection,
+    # which had no token to list tools with.
+    try:
+        generated_nodes.generate_node_types_for_connection(claims.connection_name, owner_user_id=claims.user_id)
+    except Exception as e:
+        return _error_redirect(f"Connected, but tool discovery failed: {e}")
+
+    response = RedirectResponse(
+        url=f"{claims.redirect_to}#mcp_oauth_connected={urllib.parse.quote(claims.connection_name)}",
+        status_code=302,
+    )
+    response.delete_cookie(_MCP_OAUTH_STATE_COOKIE)
+    return response
 
 
 @app.post("/connections/{name}/test", response_model=TestConnectionResponse)
-def test_connection_endpoint(name: str, request: TestConnectionRequest) -> TestConnectionResponse:
+def test_connection_endpoint(name: str, request: TestConnectionRequest, http_request: Request) -> TestConnectionResponse:
     """Tests a real, lightweight round-trip against the connection's actual
     backend. A failed connectivity check is an expected outcome (wrong
     host, server down, bad key), not a server error -- always a normal 200
@@ -641,7 +909,7 @@ def test_connection_endpoint(name: str, request: TestConnectionRequest) -> TestC
     if request.type is not None and request.config is not None:
         type_name, config_dict = request.type, request.config
     else:
-        profile = get_connection(name)
+        profile = resolve_connection_for_user(name, _caller_user_id(http_request))
         if profile is None:
             raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
         type_name, config_dict = profile.type, profile.config
@@ -660,39 +928,58 @@ def test_connection_endpoint(name: str, request: TestConnectionRequest) -> TestC
 
 
 @app.delete("/connections/{name}", status_code=204)
-def delete_connection_endpoint(name: str) -> None:
-    if not delete_connection(name):
+def delete_connection_endpoint(name: str, http_request: Request) -> None:
+    # spec-021: resolve first (mine, falling back to global -- same policy
+    # as every other connection lookup here) to find which exact scope
+    # actually owns `name`, then delete that scope specifically. A plain
+    # `delete_connection(name, user_id=caller)` would wrongly 404 when an
+    # authenticated human deletes a pre-spec-021 global connection (e.g.
+    # Ollama/Anthropic), breaking the existing single-operator workflow.
+    profile = resolve_connection_for_user(name, _caller_user_id(http_request))
+    if profile is None:
         raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
+    delete_connection(name, user_id=profile.user_id)
     # spec-019: a no-op for any connection that never had generated node
     # types (every type except mcp_server) -- cheap and correct either way.
-    generated_nodes.unregister_for_connection(name)
+    generated_nodes.unregister_for_connection(name, owner_user_id=profile.user_id)
+    # spec-021: a no-op for any connection that was never OAuth-connected --
+    # avoids leaving a stored token orphaned once its connection is gone.
+    if profile.type == "mcp_server" and profile.user_id is not None:
+        oauth_token_storage.delete_token(profile.user_id, name)
 
 
 @app.post("/connections/{name}/refresh-capabilities", response_model=RefreshCapabilitiesResponse)
-def refresh_capabilities(name: str) -> RefreshCapabilitiesResponse:
+def refresh_capabilities(name: str, http_request: Request) -> RefreshCapabilitiesResponse:
     """spec-019: re-runs live discovery for an `mcp_server` connection and
     updates its generated node set -- discovery is refreshed explicitly,
     never polled (see backend/mcp/generated_nodes.py's own docstring). A
     failed refresh leaves the previously-generated set intact (see
     generate_node_types_for_connection's ordering)."""
-    profile = get_connection(name)
+    owner = _caller_user_id(http_request)
+    profile = resolve_connection_for_user(name, owner)
     if profile is None:
         raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
     if profile.type != "mcp_server":
         raise HTTPException(status_code=422, detail=f"Connection '{name}' is not an mcp_server connection")
     try:
-        generated_types = generated_nodes.generate_node_types_for_connection(name)
+        # spec-021: regenerate under the *profile's actual owner*
+        # (profile.user_id), not necessarily the caller -- a caller who
+        # resolved to a global connection (profile.user_id is None) must
+        # regenerate it as global, not accidentally claim it as their own.
+        generated_types = generated_nodes.generate_node_types_for_connection(
+            name, owner_user_id=profile.user_id
+        )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to refresh capabilities: {e}") from e
     return RefreshCapabilitiesResponse(generated_types=generated_types)
 
 
 @app.delete("/connections/{name}/vectors", status_code=204)
-def clear_connection_vectors(name: str) -> None:
+def clear_connection_vectors(name: str, http_request: Request) -> None:
     """spec-011 §7: clears a vector_store connection's stored chunks without
     deleting the connection profile itself -- avoids needing to delete and
     recreate an entire connection just to start over during testing."""
-    profile = get_connection(name)
+    profile = resolve_connection_for_user(name, _caller_user_id(http_request))
     if profile is None:
         raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
     if profile.type != "vector_store":
@@ -900,11 +1187,17 @@ def _sync_webhooks_on_activate(
     graph_id: str,
     graph: GraphSpec,
     triggers: list[trigger_registry.TriggerRecord],
+    user_id: str | None = None,
 ) -> None:
     """Called after _register_triggers succeeds. A failure here rolls back
     the whole activation (matching the existing invalid-cron-expression
     precedent) -- spec-018 §4's resolved decision: Activate must not report
-    success while the actual external wiring silently didn't happen."""
+    success while the actual external wiring silently didn't happen.
+
+    spec-021: `user_id` is the activating caller's id (or the graph's
+    `created_by`, for startup re-activation, which has no live caller) --
+    resolve_connections needs it to see that user's own private connections,
+    not just global ones."""
     pairs = webhook_sync.adapter_pairs_for_graph(graph)
     if not pairs:
         return
@@ -918,7 +1211,7 @@ def _sync_webhooks_on_activate(
         )
 
     try:
-        resolved_connections = resolve_connections(graph)
+        resolved_connections = resolve_connections(graph, user_id=user_id)
     except ConnectionNotFoundError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
 
@@ -938,17 +1231,18 @@ def _sync_webhooks_on_activate(
             raise HTTPException(status_code=502, detail=str(e)) from e
 
 
-def _sync_webhooks_on_deactivate(graph_id: str, graph: GraphSpec) -> None:
+def _sync_webhooks_on_deactivate(graph_id: str, graph: GraphSpec, user_id: str | None = None) -> None:
     """Best-effort, unlike activate's fail-closed behavior -- deactivation's
     primary job (removing the local route/registration) must still succeed
     even if the external API is briefly unreachable; a stray webhook the
     external service will 404 against on its next delivery attempt anyway
-    is a smaller problem than a graph stuck unable to deactivate."""
+    is a smaller problem than a graph stuck unable to deactivate. `user_id`:
+    see _sync_webhooks_on_activate above."""
     pairs = webhook_sync.adapter_pairs_for_graph(graph)
     if not pairs:
         return
     try:
-        resolved_connections = resolve_connections(graph)
+        resolved_connections = resolve_connections(graph, user_id=user_id)
     except ConnectionNotFoundError:
         logger.exception("Could not resolve connections to deregister webhook(s) for graph_id=%s", graph_id)
         return
@@ -1009,7 +1303,7 @@ def _register_triggers(graph_id: str, graph: GraphSpec) -> list[trigger_registry
 
 
 @app.post("/graphs/{graph_id}/activate", response_model=ActivateGraphResponse)
-def activate_graph(graph_id: str, graph: GraphSpec) -> ActivateGraphResponse:
+def activate_graph(graph_id: str, graph: GraphSpec, http_request: Request) -> ActivateGraphResponse:
     """Registers a cron job per `schedule_trigger` node and a dynamic
     webhook route per `webhook_trigger` node. Validates first via the exact
     same validate_graph() every other entry point uses (422 with the same
@@ -1022,8 +1316,9 @@ def activate_graph(graph_id: str, graph: GraphSpec) -> ActivateGraphResponse:
     saved via POST /graphs first (SPEC-009's original "graph_id is
     caller-chosen" contract, unchanged) -- this is what makes startup
     re-activation possible."""
+    activated_by = _caller_user_id(http_request)
     try:
-        validate_graph(graph)
+        validate_graph(graph, user_id=activated_by)
     except GraphValidationError as e:
         raise HTTPException(
             status_code=422,
@@ -1042,7 +1337,7 @@ def activate_graph(graph_id: str, graph: GraphSpec) -> ActivateGraphResponse:
         # if this graph has one with a registered sync handler -- a no-op
         # for every other graph. Failure here rolls back exactly like an
         # invalid cron expression does.
-        _sync_webhooks_on_activate(graph_id, graph, triggers)
+        _sync_webhooks_on_activate(graph_id, graph, triggers, user_id=activated_by)
     except HTTPException:
         _deactivate(graph_id)  # don't leave a half-registered graph behind
         raise
@@ -1053,7 +1348,7 @@ def activate_graph(graph_id: str, graph: GraphSpec) -> ActivateGraphResponse:
 
 
 @app.post("/graphs/{graph_id}/deactivate")
-def deactivate_graph(graph_id: str) -> dict[str, str]:
+def deactivate_graph(graph_id: str, http_request: Request) -> dict[str, str]:
     active = trigger_registry.get_active(graph_id)
     if active is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' is not active")
@@ -1061,7 +1356,7 @@ def deactivate_graph(graph_id: str) -> dict[str, str]:
     # external webhook, if any -- see _sync_webhooks_on_deactivate's own
     # docstring for why this is deliberately not fatal to deactivation
     # itself, unlike activate.
-    _sync_webhooks_on_deactivate(graph_id, active.graph)
+    _sync_webhooks_on_deactivate(graph_id, active.graph, user_id=_caller_user_id(http_request))
     _deactivate(graph_id)
     graphs_store.set_is_active(graph_id, is_active=False, updated_at=_utcnow_iso())
     return {"status": "inactive"}
@@ -1089,7 +1384,11 @@ def _reactivate_persisted_graphs() -> None:
     for row in graphs_store.list_active_graphs():
         try:
             graph = GraphSpec.model_validate_json(row.spec_json)
-            validate_graph(graph)
+            # spec-021: no live caller at startup -- the graph's own
+            # created_by (spec-020) stands in for "whose private
+            # connections this graph may reference," exactly the identity
+            # that activated it originally.
+            validate_graph(graph, user_id=row.created_by)
             triggers = _register_triggers(row.graph_id, graph)
             trigger_registry.set_active(row.graph_id, graph, triggers)
         except Exception:
@@ -1102,6 +1401,13 @@ def _reactivate_persisted_graphs() -> None:
 # GET /graphs/{graph_id} below would otherwise swallow it (graph_id="active").
 
 
+def _slot_specs_from_store(graph_id: str) -> list[ConnectionSlotSpec]:
+    return [
+        ConnectionSlotSpec(slot_name=s.slot_name, connection_type=s.connection_type)
+        for s in graph_sharing_store.list_slots(graph_id)
+    ]
+
+
 @app.post("/graphs", response_model=GraphDetail, status_code=201)
 def create_graph(request: CreateGraphRequest, http_request: Request) -> GraphDetail:
     graph_id = str(uuid4())
@@ -1109,15 +1415,29 @@ def create_graph(request: CreateGraphRequest, http_request: Request) -> GraphDet
     # spec-020: http_request.state.user is None for a shared-API-key caller
     # (no human initiator) -- created_by stays correctly null in that case,
     # set only for a real logged-in human via require_auth.
-    created_by = http_request.state.user.user_id if http_request.state.user else None
-    row = graphs_store.create_graph(graph_id, request.name, request.spec.model_dump_json(), now, created_by=created_by)
-    return GraphDetail(graph_id=row.graph_id, name=row.name, spec=request.spec, is_active=row.is_active, created_by=row.created_by)
+    created_by = _caller_user_id(http_request)
+    row = graphs_store.create_graph(
+        graph_id, request.name, request.spec.model_dump_json(), now, created_by=created_by, sharing=request.sharing
+    )
+    if request.sharing == "shared":
+        graph_sharing_store.set_slots(
+            graph_id, [(s.slot_name, s.connection_type) for s in request.connection_slots]
+        )
+    return GraphDetail(
+        graph_id=row.graph_id,
+        name=row.name,
+        spec=request.spec,
+        is_active=row.is_active,
+        created_by=row.created_by,
+        sharing=row.sharing,
+        connection_slots=request.connection_slots if request.sharing == "shared" else [],
+    )
 
 
 @app.get("/graphs", response_model=list[GraphSummary])
 def list_graphs() -> list[GraphSummary]:
     return [
-        GraphSummary(graph_id=g.graph_id, name=g.name, is_active=g.is_active, updated_at=g.updated_at)
+        GraphSummary(graph_id=g.graph_id, name=g.name, is_active=g.is_active, updated_at=g.updated_at, sharing=g.sharing)
         for g in graphs_store.list_graphs()
     ]
 
@@ -1133,21 +1453,36 @@ def get_graph(graph_id: str) -> GraphDetail:
         spec=GraphSpec.model_validate_json(row.spec_json),
         is_active=row.is_active,
         created_by=row.created_by,
+        sharing=row.sharing,
+        connection_slots=_slot_specs_from_store(graph_id) if row.sharing == "shared" else [],
     )
 
 
 @app.put("/graphs/{graph_id}", response_model=GraphDetail)
 def update_graph(graph_id: str, request: UpdateGraphRequest) -> GraphDetail:
     spec_json = request.spec.model_dump_json() if request.spec is not None else None
-    row = graphs_store.update_graph(graph_id, _utcnow_iso(), name=request.name, spec_json=spec_json)
+    row = graphs_store.update_graph(
+        graph_id, _utcnow_iso(), name=request.name, spec_json=spec_json, sharing=request.sharing
+    )
     if row is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+    if row.sharing == "shared" and request.connection_slots is not None:
+        graph_sharing_store.set_slots(
+            graph_id, [(s.slot_name, s.connection_type) for s in request.connection_slots]
+        )
+    elif row.sharing == "private":
+        # spec-021: switched back to private (or created that way) -- its
+        # declared slots and every runner's mapping against them are
+        # meaningless now; don't leave them around as stale, confusing state.
+        graph_sharing_store.clear_slots(graph_id)
     return GraphDetail(
         graph_id=row.graph_id,
         name=row.name,
         spec=GraphSpec.model_validate_json(row.spec_json),
         is_active=row.is_active,
         created_by=row.created_by,
+        sharing=row.sharing,
+        connection_slots=_slot_specs_from_store(graph_id) if row.sharing == "shared" else [],
     )
 
 
@@ -1161,3 +1496,45 @@ def delete_graph(graph_id: str) -> None:
     deleted = graphs_store.delete_graph(graph_id)
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+    graph_sharing_store.clear_slots(graph_id)
+
+
+@app.post("/graphs/{graph_id}/connection-mapping", response_model=SlotMappingResponse)
+def set_connection_mapping(graph_id: str, request: SetSlotMappingRequest, http_request: Request) -> SlotMappingResponse:
+    """spec-021: a non-author runner's one-time "which of your own
+    connections fills this slot" step -- remembered thereafter (POST /runs'
+    pre-flight check above never asks again once a mapping exists). Requires
+    a real signed-in user; validates the named connection is actually
+    visible to them (their own, or global) before accepting the mapping, so
+    a typo'd or someone-else's connection name can't be silently stored."""
+    user_id = _caller_user_id(http_request)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Sign in to map a connection slot.")
+
+    graph_row = graphs_store.get_graph(graph_id)
+    if graph_row is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+    if graph_row.sharing != "shared":
+        raise HTTPException(status_code=422, detail=f"Graph '{graph_id}' is not shared -- it has no connection slots.")
+
+    declared = {s.slot_name for s in graph_sharing_store.list_slots(graph_id)}
+    if request.slot_name not in declared:
+        raise HTTPException(status_code=422, detail=f"'{request.slot_name}' is not a declared slot on this graph.")
+
+    if resolve_connection_for_user(request.connection_name, user_id) is None:
+        raise HTTPException(status_code=404, detail=f"Unknown connection: {request.connection_name!r}")
+
+    graph_sharing_store.set_mapping(user_id, graph_id, request.slot_name, request.connection_name)
+    return SlotMappingResponse(slot_name=request.slot_name, connection_name=request.connection_name)
+
+
+@app.get("/graphs/{graph_id}/connection-mapping", response_model=list[SlotMappingResponse])
+def list_connection_mappings(graph_id: str, http_request: Request) -> list[SlotMappingResponse]:
+    """The caller's own current slot mappings for this graph -- lets the
+    canvas show which slots are already mapped before prompting for the
+    rest, rather than only finding out via a 409 on POST /runs."""
+    user_id = _caller_user_id(http_request)
+    if user_id is None:
+        return []
+    mappings = graph_sharing_store.get_mappings_for_user(user_id, graph_id)
+    return [SlotMappingResponse(slot_name=k, connection_name=v) for k, v in mappings.items()]
