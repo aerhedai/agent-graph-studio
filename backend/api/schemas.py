@@ -175,6 +175,16 @@ class ConnectionInfo(BaseModel):
     type: str
     """Never includes `config` -- secrets (API keys, etc.) stay server-side
     only and are never returned over the API (spec-006 §5)."""
+    requires_oauth: bool = False
+    """spec-021: true for an `mcp_server` connection whose server needs a
+    per-user OAuth login before its tools are usable. Not a secret --
+    safe to expose, and the one signal the canvas needs to show a
+    "Connect" affordance instead of treating the connection as
+    immediately usable."""
+    oauth_connected: bool = False
+    """spec-021: true once *this specific owner* has completed that OAuth
+    login (a real token is stored). Always false for a connection that
+    doesn't require OAuth in the first place."""
 
 
 class CreateConnectionRequest(BaseModel):
@@ -227,14 +237,28 @@ class ActiveGraphInfo(BaseModel):
 # the first time -- see backend/storage/graphs_store.py's module docstring.
 
 
+class ConnectionSlotSpec(BaseModel):
+    """spec-021: one connection slot a shared graph's author declares --
+    e.g. slot_name="gmail", connection_type="mcp_server". A non-author
+    runner maps each declared slot to one of their own connections before
+    their first run (POST /graphs/{id}/connection-mapping)."""
+
+    slot_name: str
+    connection_type: str
+
+
 class CreateGraphRequest(BaseModel):
     name: str
     spec: GraphSpec
+    sharing: str = "private"
+    connection_slots: list[ConnectionSlotSpec] = []
 
 
 class UpdateGraphRequest(BaseModel):
     name: str | None = None
     spec: GraphSpec | None = None
+    sharing: str | None = None
+    connection_slots: list[ConnectionSlotSpec] | None = None
 
 
 class GraphSummary(BaseModel):
@@ -242,6 +266,7 @@ class GraphSummary(BaseModel):
     name: str
     is_active: bool
     updated_at: str
+    sharing: str = "private"
 
 
 class GraphDetail(BaseModel):
@@ -252,6 +277,27 @@ class GraphDetail(BaseModel):
     created_by: str | None = None
     """spec-020: the user id who created this graph, None for a
     pre-spec-020 graph or one created via the shared API key."""
+    sharing: str = "private"
+    connection_slots: list[ConnectionSlotSpec] = []
+
+
+# spec-021: shared-graph slot mapping -- a non-author runner's one-time
+# "which of your own connections fills this slot" step.
+
+
+class MissingSlotInfo(BaseModel):
+    slot_name: str
+    connection_type: str
+
+
+class SetSlotMappingRequest(BaseModel):
+    slot_name: str
+    connection_name: str
+
+
+class SlotMappingResponse(BaseModel):
+    slot_name: str
+    connection_name: str
 
 
 # spec-018: the one app-level setting needed to auto-register external

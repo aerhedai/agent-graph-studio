@@ -1,0 +1,29 @@
+{
+  "version": "0.1",
+  "nodes": [
+    {
+      "id": "file_path",
+      "type": "text_input",
+      "config": { "value": "/tmp/sandbox/carrier_status.txt" }
+    },
+    {
+      "id": "carrier_lookup",
+      "type": "mcp_call",
+      "config": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/sandbox"],
+        "tool_name": "read_text_file",
+        "require_approval": false
+      }
+    },
+    {
+      "id": "result",
+      "type": "text_output",
+      "config": {}
+    }
+  ],
+  "edges": [
+    { "from": { "node": "file_path", "slot": "text" }, "to": { "node": "carrier_lookup", "slot": "path" } },
+    { "from": { "node": "carrier_lookup", "slot": "result" }, "to": { "node": "result", "slot": "text" } }
+  ]
+}

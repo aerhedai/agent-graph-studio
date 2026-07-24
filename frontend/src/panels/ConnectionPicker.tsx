@@ -5,6 +5,7 @@ import {
   deleteConnection,
   fetchConnectionTypes,
   fetchConnections,
+  mcpOAuthStartUrl,
   testConnection,
 } from "../api/client";
 import type { ConnectionInfo, ConnectionTypeInfo } from "../api/types";
@@ -128,6 +129,9 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
     }
   }
 
+  const selectedConnection = connections.find((c) => c.name === value);
+  const needsOAuthConnect = selectedConnection?.requires_oauth && !selectedConnection.oauth_connected;
+
   return (
     <div className="connection-picker">
       {loadError && <div className="config-panel__error">{loadError}</div>}
@@ -145,6 +149,7 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
             {connections.map((c) => (
               <option key={c.name} value={c.name}>
                 {c.name} ({c.type})
+                {c.requires_oauth ? (c.oauth_connected ? " ✓ connected" : " — needs OAuth") : ""}
               </option>
             ))}
           </select>
@@ -163,6 +168,22 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
           {deleting ? "Deleting..." : "Delete"}
         </button>
       </div>
+
+      {needsOAuthConnect && (
+        // spec-021: this server requires a real per-user OAuth login before
+        // its tools do anything -- a real top-level navigation to Google's/
+        // the server's own consent screen, not a fetch(). Returns here
+        // (via a URL fragment Canvas.tsx already parses) once complete.
+        <div className="connection-picker__test-result failure">
+          <span>"{value}" needs to be connected before its tools will work.</span>
+          <a
+            className="btn btn--primary"
+            href={mcpOAuthStartUrl(value ?? "", window.location.origin + window.location.pathname)}
+          >
+            Connect
+          </a>
+        </div>
+      )}
 
       {showForm && (
         <div className="connection-picker__form">

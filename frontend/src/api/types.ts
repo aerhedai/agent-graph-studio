@@ -43,6 +43,10 @@ export interface JsonSchemaProperty {
   title?: string;
   default?: unknown;
   $ref?: string;
+  // Pydantic renders `X | None` (e.g. `oauth_client_id: str | None`) as
+  // `anyOf: [{type: "string"}, {type: "null"}]` rather than a flat
+  // `type: "string"` -- no top-level `type` at all in that case.
+  anyOf?: JsonSchemaProperty[];
 }
 
 export interface JsonSchema {
@@ -138,6 +142,11 @@ export interface ConnectionTypeInfo {
 export interface ConnectionInfo {
   name: string;
   type: string;
+  // spec-021: true for an mcp_server connection whose server needs a
+  // per-user OAuth login before its tools are usable; oauth_connected is
+  // true once this caller has actually completed that login.
+  requires_oauth: boolean;
+  oauth_connected: boolean;
 }
 
 export interface TestConnectionResponse {
@@ -148,11 +157,18 @@ export interface TestConnectionResponse {
 // spec-015: saved graphs, mirroring backend/api/schemas.py's
 // GraphSummary/GraphDetail exactly.
 
+// spec-021: one connection slot a shared graph's author declares.
+export interface ConnectionSlotSpec {
+  slot_name: string;
+  connection_type: string;
+}
+
 export interface GraphSummary {
   graph_id: string;
   name: string;
   is_active: boolean;
   updated_at: string;
+  sharing: "private" | "shared";
 }
 
 export interface GraphDetail {
@@ -161,6 +177,19 @@ export interface GraphDetail {
   spec: GraphSpec;
   is_active: boolean;
   created_by?: string | null;
+  sharing: "private" | "shared";
+  connection_slots: ConnectionSlotSpec[];
+}
+
+// spec-021: a shared graph's slot -> this caller's own mapped connection.
+export interface SlotMappingResponse {
+  slot_name: string;
+  connection_name: string;
+}
+
+export interface MissingSlotInfo {
+  slot_name: string;
+  connection_type: string;
 }
 
 // spec-018: the one app-level setting needed to auto-register external

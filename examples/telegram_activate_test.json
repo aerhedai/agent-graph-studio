@@ -1,0 +1,34 @@
+{
+  "version": "0.1",
+  "nodes": [
+    {
+      "id": "telegram_trigger",
+      "type": "webhook_trigger",
+      "config": {}
+    },
+    {
+      "id": "telegram_adapter_1",
+      "type": "telegram_adapter",
+      "config": {
+        "bot_token_connection": "my-telegram-bot"
+      }
+    },
+    {
+      "id": "echo",
+      "type": "text_output",
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "kind": "sub_node",
+      "slot": "trigger_adapter",
+      "from": { "node": "telegram_adapter_1" },
+      "to": { "node": "telegram_trigger" }
+    },
+    {
+      "from": { "node": "telegram_trigger", "slot": "message_text" },
+      "to": { "node": "echo", "slot": "text" }
+    }
+  ]
+}

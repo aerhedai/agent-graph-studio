@@ -1,0 +1,19 @@
+[project]
+name = "discord-mcp-server"
+version = "0.1.0"
+requires-python = ">=3.11"
+description = "A small, standalone, spec-conformant MCP server for sending Discord messages via a per-user webhook.incoming OAuth grant -- built to prove agent-graph-studio's generic per-user MCP OAuth mechanism (SPEC-021) against a real server, not a mocked one."
+dependencies = [
+    "mcp>=1.28.1",
+    "starlette>=0.47.0",
+    "uvicorn>=0.51.0",
+    "httpx>=0.28.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+include = ["main.py"]

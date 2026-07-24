@@ -2,18 +2,21 @@ import type {
   ActivateGraphResponse,
   ActiveGraphInfo,
   ConnectionInfo,
+  ConnectionSlotSpec,
   ConnectionTypeInfo,
   GraphDetail,
   GraphSpec,
   GraphSummary,
   InviteResponse,
   MeResponse,
+  MissingSlotInfo,
   NodeTypeInfo,
   ResolveSlotsResponse,
   RunListResponse,
   RunStatusResponse,
   RunSubmitResponse,
   SettingsResponse,
+  SlotMappingResponse,
   TestConnectionResponse,
   UpdateSettingsResponse,
 } from "./types";
@@ -61,6 +64,19 @@ function authHeaders(): Record<string, string> {
   return key ? { Authorization: `Bearer ${key}` } : {};
 }
 
+// spec-021: thrown specifically by submitRun on a 409 -- a shared graph
+// whose runner hasn't mapped one or more declared connection slots yet.
+// Distinct from a generic failure so the canvas can show a mapping prompt
+// instead of a plain error message, the same "one dedicated error type per
+// distinguishable failure" precedent as UnauthorizedError.
+export class NeedsConnectionMappingError extends Error {
+  missingSlots: MissingSlotInfo[];
+  constructor(missingSlots: MissingSlotInfo[]) {
+    super("This shared graph needs its connection slot(s) mapped before running it.");
+    this.missingSlots = missingSlots;
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...authHeaders() },
@@ -92,12 +108,23 @@ export function resolveSlots(
 // docstring, spec-010 §8) -- omitted for an ordinary manual run, passed by
 // Canvas.tsx so a Run-button submission and a trigger-fired run both land
 // under the same graph_id for the watch poll (listRuns) to find uniformly.
-export function submitRun(graph: GraphSpec, graphId?: string): Promise<RunSubmitResponse> {
+export async function submitRun(graph: GraphSpec, graphId?: string): Promise<RunSubmitResponse> {
   const query = graphId ? `?graph_id=${encodeURIComponent(graphId)}` : "";
-  return request<RunSubmitResponse>(`/runs${query}`, {
+  const response = await fetch(`${API_BASE}/runs${query}`, {
     method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(graph),
   });
+  if (response.status === 401) throw new UnauthorizedError();
+  if (response.status === 409) {
+    const body = await response.json();
+    throw new NeedsConnectionMappingError(body.detail?.missing_slots ?? []);
+  }
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`POST /runs${query} failed (${response.status}): ${body}`);
+  }
+  return response.json() as Promise<RunSubmitResponse>;
 }
 
 export function pollRun(runId: string): Promise<RunStatusResponse> {
@@ -209,10 +236,15 @@ export async function deleteConnection(name: string): Promise<void> {
 
 // --- spec-015: saved graphs, real server-side graph identity -----------
 
-export function createGraph(name: string, spec: GraphSpec): Promise<GraphDetail> {
+export function createGraph(
+  name: string,
+  spec: GraphSpec,
+  sharing: "private" | "shared" = "private",
+  connectionSlots: ConnectionSlotSpec[] = [],
+): Promise<GraphDetail> {
   return request<GraphDetail>("/graphs", {
     method: "POST",
-    body: JSON.stringify({ name, spec }),
+    body: JSON.stringify({ name, spec, sharing, connection_slots: connectionSlots }),
   });
 }
 
@@ -226,12 +258,34 @@ export function getGraph(graphId: string): Promise<GraphDetail> {
 
 export function updateGraph(
   graphId: string,
-  update: { name?: string; spec?: GraphSpec },
+  update: { name?: string; spec?: GraphSpec; sharing?: "private" | "shared"; connectionSlots?: ConnectionSlotSpec[] },
 ): Promise<GraphDetail> {
   return request<GraphDetail>(`/graphs/${encodeURIComponent(graphId)}`, {
     method: "PUT",
-    body: JSON.stringify(update),
+    body: JSON.stringify({
+      name: update.name,
+      spec: update.spec,
+      sharing: update.sharing,
+      connection_slots: update.connectionSlots,
+    }),
   });
+}
+
+// --- spec-021: shared-graph connection-slot mapping ---------------------
+
+export function setConnectionMapping(
+  graphId: string,
+  slotName: string,
+  connectionName: string,
+): Promise<SlotMappingResponse> {
+  return request<SlotMappingResponse>(`/graphs/${encodeURIComponent(graphId)}/connection-mapping`, {
+    method: "POST",
+    body: JSON.stringify({ slot_name: slotName, connection_name: connectionName }),
+  });
+}
+
+export function listConnectionMappings(graphId: string): Promise<SlotMappingResponse[]> {
+  return request<SlotMappingResponse[]>(`/graphs/${encodeURIComponent(graphId)}/connection-mapping`);
 }
 
 export async function deleteGraph(graphId: string): Promise<void> {
@@ -266,6 +320,20 @@ export function updateSettings(publicBaseUrl: string): Promise<UpdateSettingsRes
 // URL fragment) once the OAuth round trip with Google completes.
 export function googleLoginUrl(redirectTo: string): string {
   return `${API_BASE}/auth/google/login?redirect_to=${encodeURIComponent(redirectTo)}`;
+}
+
+// spec-021: also a real top-level navigation target, not a fetch() -- the
+// target MCP server's own OAuth consent screen has to render in the real
+// browser tab. Unlike googleLoginUrl, /connections/oauth/start requires an
+// already-signed-in caller (see backend/api/app.py's own reasoning) -- a
+// plain browser navigation can't carry the usual Authorization header, so
+// the session token rides along as `?key=`, the same query-param credential
+// mechanism require_auth already accepts for webhook callers.
+export function mcpOAuthStartUrl(connectionName: string, redirectTo: string): string {
+  const key = getApiKey();
+  const params = new URLSearchParams({ name: connectionName, redirect_to: redirectTo });
+  if (key) params.set("key", key);
+  return `${API_BASE}/connections/oauth/start?${params.toString()}`;
 }
 
 export function getMe(): Promise<MeResponse> {

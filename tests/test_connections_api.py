@@ -94,7 +94,14 @@ def test_list_connections_never_returns_config():
 
     assert response.status_code == 200
     entries = response.json()
-    assert {"name": "listed-conn", "type": "anthropic"} in entries
+    # spec-021: entries also carry requires_oauth/oauth_connected (both
+    # false for a non-mcp_server connection like this one) -- checked by
+    # name/type here rather than exact-equality, since that pair is what
+    # this test is actually about; the OAuth fields have their own
+    # dedicated coverage in tests/test_mcp_oauth_connections_api.py.
+    match = next((e for e in entries if e["name"] == "listed-conn"), None)
+    assert match is not None
+    assert match["type"] == "anthropic"
     assert all("config" not in entry for entry in entries)
 
 
@@ -105,7 +112,11 @@ def test_create_connection_persists_and_is_listed():
     )
 
     assert response.status_code == 201
-    assert response.json() == {"name": "new-conn", "type": "ollama"}
+    body = response.json()
+    assert body["name"] == "new-conn"
+    assert body["type"] == "ollama"
+    assert body["requires_oauth"] is False
+    assert body["oauth_connected"] is False
     assert any(c["name"] == "new-conn" for c in client.get("/connections").json())
 
 

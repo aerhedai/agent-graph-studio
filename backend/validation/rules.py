@@ -214,7 +214,10 @@ def check_cycles(graph: GraphSpec, valid_edges: list[EdgeSpec]) -> list[Validati
 
 
 def check_missing_connections(
-    graph: GraphSpec, connections_path: Path | None = None
+    graph: GraphSpec,
+    connections_path: Path | None = None,
+    user_id: str | None = None,
+    slot_mappings: dict[str, str] | None = None,
 ) -> list[ValidationIssue]:
     """Spec-006 §6: a node referencing a connection name not present in the
     local store must produce a clear, specific error naming it -- reusing
@@ -224,9 +227,15 @@ def check_missing_connections(
     config fields one node has (spec-011 §4): reuses
     connection_reference_names, the same convention-based key detection
     resolve_connections() uses, so the two can never drift apart.
+
+    spec-021: `user_id` mirrors resolve_connections()'s own "this caller's
+    own connection, falling back to global" policy -- a private connection
+    that genuinely exists (just not globally) must not be reported missing.
+    `slot_mappings`: a shared graph's non-author runner resolves a declared
+    slot's name to their own mapped connection first -- same substitution
+    resolve_connections() itself applies, via the same shared helper.
     """
-    from backend.connections.resolver import connection_reference_names
-    from backend.connections.store import get_connection
+    from backend.connections.resolver import _resolve_slot_aware, connection_reference_names
 
     issues: list[ValidationIssue] = []
     known: dict[str, bool] = {}
@@ -235,7 +244,7 @@ def check_missing_connections(
             continue
         for name in connection_reference_names(node.config):
             if name not in known:
-                known[name] = get_connection(name, path=connections_path) is not None
+                known[name] = _resolve_slot_aware(name, user_id, slot_mappings, connections_path) is not None
             if not known[name]:
                 issues.append(
                     ValidationIssue(
