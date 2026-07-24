@@ -70,4 +70,6 @@ runs:   + run_by (nullable, user id -- null for schedule/webhook-triggered runs)
 ## 7. Open questions
 
 - **JWT lifetime and refresh strategy** — proposing a moderate-lived token (e.g. a few hours) with silent re-authentication against Google when it expires, rather than a separate refresh-token dance, to keep this spec's scope tight. Open to revisiting if that proves too disruptive in practice.
+  - Resolved: 12-hour session tokens, silent re-auth against Google on expiry — implemented as proposed, no refresh-token flow.
 - **Whether the existing shared-API-key-only mode should remain available as a deployment option** (e.g. for a genuinely single-operator deployment that doesn't want Google OAuth at all) — proposing yes, keep it available behind a config flag, so this spec is additive to SPEC-017 rather than a hard breaking change for existing deployments. Flagging for confirmation since it affects how strictly "replaces" should be read above.
+  - Resolved: no opt-out. Google OAuth credentials (`AGENT_GRAPH_STUDIO_GOOGLE_CLIENT_ID`/`_SECRET`) are a mandatory startup requirement alongside the JWT secret and admin email, same fail-closed pattern as every other required secret — the shared API key narrows to a machine-to-machine credential (webhooks) rather than remaining a standalone human login path.

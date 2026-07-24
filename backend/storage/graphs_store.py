@@ -55,6 +55,10 @@ class GraphRow:
     is_active: bool
     created_at: str
     updated_at: str
+    created_by: str | None = None
+    """spec-020: the user id who created this graph, None for a graph
+    created before this spec (or via a shared-API-key/system call with no
+    human initiator)."""
 
 
 @dataclass
@@ -78,11 +82,25 @@ def graphs_db_path() -> Path:
     return Path.home() / ".agent-graph-studio" / "graphs.db"
 
 
+def _add_column_if_missing(conn: sqlite3.Connection, table: str, column: str, coltype: str) -> None:
+    """spec-020: this project's first schema change to an already-existing
+    table -- CREATE TABLE IF NOT EXISTS (below) does nothing for a table
+    that already exists without the new column. Deliberately minimal (no
+    migration framework); tolerates "duplicate column" so this is safe to
+    call on every boot, not just the first one after upgrading."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+    except sqlite3.OperationalError as e:
+        if "duplicate column name" not in str(e).lower():
+            raise
+
+
 def _connect(path: Path | None = None) -> sqlite3.Connection:
     target = path or graphs_db_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(target, timeout=5.0)
     conn.execute(_SCHEMA)
+    _add_column_if_missing(conn, "graphs", "created_by", "TEXT")
     return conn
 
 
@@ -97,13 +115,14 @@ def create_graph(
     name: str,
     spec_json: str,
     created_at: str,
+    created_by: str | None = None,
     path: Path | None = None,
 ) -> GraphRow:
     with _connect(path) as conn:
         conn.execute(
-            "INSERT INTO graphs (graph_id, name, spec_json, is_active, created_at, updated_at) "
-            "VALUES (?, ?, ?, 0, ?, ?)",
-            (graph_id, name, spec_json, created_at, created_at),
+            "INSERT INTO graphs (graph_id, name, spec_json, is_active, created_at, updated_at, created_by) "
+            "VALUES (?, ?, ?, 0, ?, ?, ?)",
+            (graph_id, name, spec_json, created_at, created_at, created_by),
         )
     return GraphRow(
         graph_id=graph_id,
@@ -112,6 +131,7 @@ def create_graph(
         is_active=False,
         created_at=created_at,
         updated_at=created_at,
+        created_by=created_by,
     )
 
 
@@ -119,7 +139,7 @@ def get_graph(graph_id: str, path: Path | None = None) -> GraphRow | None:
     with _connect(path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
-            "SELECT graph_id, name, spec_json, is_active, created_at, updated_at "
+            "SELECT graph_id, name, spec_json, is_active, created_at, updated_at, created_by "
             "FROM graphs WHERE graph_id = ?",
             (graph_id,),
         ).fetchone()
@@ -161,6 +181,7 @@ def update_graph(
         is_active=existing.is_active,
         created_at=existing.created_at,
         updated_at=updated_at,
+        created_by=existing.created_by,
     )
 
 
@@ -176,7 +197,7 @@ def list_active_graphs(path: Path | None = None) -> list[GraphRow]:
     with _connect(path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
-            "SELECT graph_id, name, spec_json, is_active, created_at, updated_at "
+            "SELECT graph_id, name, spec_json, is_active, created_at, updated_at, created_by "
             "FROM graphs WHERE is_active = 1",
         ).fetchall()
     return [_row_to_graph(r) for r in rows]

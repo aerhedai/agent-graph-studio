@@ -115,6 +115,9 @@ class RunStatusResponse(BaseModel):
     trace: list[TraceRecord]
     result: dict[str, Any] | None
     error: str | None
+    run_by: str | None = None
+    """spec-020: the user id who submitted this run, None for a
+    schedule/webhook-triggered run or a shared-API-key caller."""
 
 
 class RunSummary(BaseModel):
@@ -246,6 +249,9 @@ class GraphDetail(BaseModel):
     name: str
     spec: GraphSpec
     is_active: bool
+    created_by: str | None = None
+    """spec-020: the user id who created this graph, None for a
+    pre-spec-020 graph or one created via the shared API key."""
 
 
 # spec-018: the one app-level setting needed to auto-register external
@@ -263,3 +269,25 @@ class UpdateSettingsRequest(BaseModel):
 class UpdateSettingsResponse(BaseModel):
     public_base_url: str
     warning: str | None = None
+
+
+# --- spec-020: platform authentication --------------------------------
+
+
+class MeResponse(BaseModel):
+    user_id: str
+    email: str
+    display_name: str
+    role: str
+
+
+class InviteRequest(BaseModel):
+    email: str
+    role: str = "member"
+
+
+class InviteResponse(BaseModel):
+    email: str
+    role: str
+    invited_by: str | None
+    invited_at: str

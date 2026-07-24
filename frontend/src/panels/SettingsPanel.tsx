@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { getSettings, updateSettings } from "../api/client";
+import { clearApiKey, getMe, getSettings, inviteUser, updateSettings } from "../api/client";
+import type { MeResponse } from "../api/types";
 
 interface SettingsPanelProps {
   onClose: () => void;
@@ -18,6 +19,15 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  // spec-020: who's signed in, and whether they're allowed to invite
+  // others -- a shared-API-key caller (no `me`) simply doesn't see the
+  // account section or the invite affordance at all.
+  const [me, setMe] = useState<MeResponse | null>(null);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteStatus, setInviteStatus] = useState<string | null>(null);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [inviting, setInviting] = useState(false);
+
   useEffect(() => {
     getSettings()
       .then((res) => {
@@ -25,7 +35,31 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         setDraft(res.public_base_url ?? "");
       })
       .catch((e: unknown) => setError(String(e)));
+    getMe()
+      .then(setMe)
+      .catch(() => setMe(null));
   }, []);
+
+  async function handleInvite() {
+    if (!inviteEmail.trim()) return;
+    setInviting(true);
+    setInviteError(null);
+    setInviteStatus(null);
+    try {
+      const res = await inviteUser(inviteEmail.trim());
+      setInviteStatus(`Invited ${res.email} as ${res.role}.`);
+      setInviteEmail("");
+    } catch (e) {
+      setInviteError(String(e));
+    } finally {
+      setInviting(false);
+    }
+  }
+
+  function handleSignOut() {
+    clearApiKey();
+    window.location.reload();
+  }
 
   async function handleSave() {
     if (!draft.trim()) return;
@@ -78,6 +112,43 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         {saved && <p className="history-panel__empty">Currently set to: {saved}</p>}
         {warning && <div className="run-bar__error">{warning}</div>}
         {error && <div className="run-bar__error">{error}</div>}
+
+        {me && (
+          <>
+            <div className="history-panel__header">
+              <h2>Account</h2>
+            </div>
+            <p className="history-panel__empty">
+              Signed in as {me.display_name} ({me.email}) -- {me.role}
+            </p>
+            <button type="button" className="run-bar__secondary" onClick={handleSignOut}>
+              Sign out
+            </button>
+          </>
+        )}
+
+        {me?.role === "admin" && (
+          <>
+            <div className="history-panel__header">
+              <h2>Invite a user</h2>
+            </div>
+            <div className="config-panel__field">
+              <label htmlFor="invite-email">Email</label>
+              <input
+                id="invite-email"
+                type="email"
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+                placeholder="teammate@example.com"
+              />
+            </div>
+            <button type="button" onClick={() => void handleInvite()} disabled={inviting}>
+              {inviting ? "Inviting..." : "Invite"}
+            </button>
+            {inviteStatus && <p className="history-panel__empty">{inviteStatus}</p>}
+            {inviteError && <div className="run-bar__error">{inviteError}</div>}
+          </>
+        )}
       </aside>
     </div>
   );

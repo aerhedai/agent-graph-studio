@@ -57,21 +57,27 @@ class RunRecord:
     trace: list[TraceRecord] = field(default_factory=list)
     result: dict[str, Any] | None = None
     error: str | None = None
+    run_by: str | None = None
+    """spec-020: the user id who submitted this run, None for a
+    schedule/webhook-triggered run or a shared-API-key caller."""
 
 
 _runs: dict[str, RunRecord] = {}
 
 
-def create_run(run_id: str, graph_id: str | None = None, trigger_source: str = "manual") -> RunRecord:
+def create_run(
+    run_id: str, graph_id: str | None = None, trigger_source: str = "manual", run_by: str | None = None
+) -> RunRecord:
     started_at = _utcnow_iso()
     record = RunRecord(
         run_id=run_id,
         graph_id=graph_id,
         trigger_source=trigger_source,
         started_at=started_at,
+        run_by=run_by,
     )
     _runs[run_id] = record
-    runs_store.create_run_record(run_id, graph_id, trigger_source, started_at)
+    runs_store.create_run_record(run_id, graph_id, trigger_source, started_at, run_by=run_by)
     return record
 
 
@@ -91,6 +97,7 @@ def get_run_snapshot(run_id: str) -> RunRecord | None:
         trace=list(record.trace),
         result=record.result,
         error=record.error,
+        run_by=record.run_by,
     )
 
 
