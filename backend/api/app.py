@@ -53,6 +53,7 @@ from backend.api.schemas import (
     MeResponse,
     NodeTypeInfo,
     PendingApprovalInfo,
+    PrivateConnectionSummary,
     RefreshCapabilitiesResponse,
     ResolveApprovalRequest,
     ResolveSlotsRequest,
@@ -69,6 +70,7 @@ from backend.api.schemas import (
     TestConnectionRequest,
     TestConnectionResponse,
     TriggerInfo,
+    UpdateConnectionRequest,
     UpdateGraphRequest,
     UpdateSettingsRequest,
     UpdateSettingsResponse,
@@ -81,8 +83,11 @@ from backend.connections.store import (
     add_connection,
     delete_connection,
     ensure_encryption_key_configured,
+    get_connection,
     list_connections,
+    list_connections_unscoped,
     resolve_connection_for_user,
+    set_connection_owner,
     update_connection_config,
 )
 from backend.execution import approvals
@@ -175,6 +180,32 @@ def _caller_user_id(http_request: Request) -> str | None:
     originally written inline for."""
     user = http_request.state.user
     return user.user_id if user else None
+
+
+def _caller_role(http_request: Request) -> str | None:
+    """spec-023: same factoring rationale as _caller_user_id -- every
+    _connection_info call site needs this alongside the caller's user id
+    to compute can_manage."""
+    user = http_request.state.user
+    return user.role if user else None
+
+
+def _require_admin(http_request: Request) -> None:
+    """spec-023: same factoring rationale as _caller_user_id -- inline at
+    /auth/invite as the one role check in the whole app until now; now that
+    connection scope/mutation/promote-to-global all need the identical
+    check, one shared helper instead of four copies of the same two lines.
+
+    A shared-API-key caller (no signed-in user at all, http_request.state
+    .user is None) is deliberately let through, not blocked -- that
+    credential predates the whole admin/member role system (SPEC-020) and
+    has always had unrestricted access to global connections (the only
+    kind that existed before per-user scoping); this spec's new
+    restriction is about a signed-in *non-admin human*, not about
+    tightening the shared key's own long-standing access."""
+    user = http_request.state.user
+    if user is not None and user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
 
 
 def require_auth(
@@ -618,20 +649,37 @@ def list_connection_types() -> list[ConnectionTypeInfo]:
     return infos
 
 
-def _connection_info(profile) -> ConnectionInfo:
+def _connection_info(profile, caller_user_id: str | None = None, caller_role: str | None = None) -> ConnectionInfo:
     """spec-021: computes requires_oauth/oauth_connected from the profile's
     own config and (if relevant) the token store -- the one place this
     logic lives, so every ConnectionInfo returned anywhere can't drift out
-    of sync with the actual OAuth state."""
+    of sync with the actual OAuth state.
+
+    spec-023: oauth_connected is looked up by *caller_user_id*, not
+    profile.user_id -- for a private connection those are always the same
+    (list_connections only ever returns the caller's own private
+    connections, never someone else's), but for a global connection
+    (profile.user_id is None) the OAuth-connected state is inherently
+    per-caller, not per-profile: each user who connects their own account
+    to the same global connection gets their own token. is_global/
+    can_manage are likewise computed here, the one place, so every route
+    returning a ConnectionInfo agrees on who may manage what."""
     requires_oauth = False
     oauth_connected = False
     if profile.type == "mcp_server":
         config = McpServerConnectionConfig.model_validate(profile.config)
         requires_oauth = config.requires_oauth
-        if requires_oauth and profile.user_id is not None:
-            oauth_connected = oauth_token_storage.get_token(profile.user_id, profile.name) is not None
+        if requires_oauth and caller_user_id is not None:
+            oauth_connected = oauth_token_storage.get_token(caller_user_id, profile.name) is not None
+    is_global = profile.user_id is None
+    can_manage = profile.user_id == caller_user_id or (is_global and caller_role == "admin")
     return ConnectionInfo(
-        name=profile.name, type=profile.type, requires_oauth=requires_oauth, oauth_connected=oauth_connected
+        name=profile.name,
+        type=profile.type,
+        requires_oauth=requires_oauth,
+        oauth_connected=oauth_connected,
+        is_global=is_global,
+        can_manage=can_manage,
     )
 
 
@@ -640,7 +688,9 @@ def list_all_connections(http_request: Request) -> list[ConnectionInfo]:
     # spec-021: this caller's own connections plus every global one -- an
     # unauthenticated/shared-key caller (user_id=None) sees only global
     # connections, exactly pre-spec-021 behavior.
-    return [_connection_info(c) for c in list_connections(user_id=_caller_user_id(http_request))]
+    caller = _caller_user_id(http_request)
+    role = _caller_role(http_request)
+    return [_connection_info(c, caller, role) for c in list_connections(user_id=caller)]
 
 
 @app.get("/connections/{name}/models", response_model=list[str])
@@ -679,10 +729,19 @@ def create_connection(request: CreateConnectionRequest, http_request: Request) -
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"Invalid config for '{request.type}': {e}") from e
 
+    # spec-023: an explicit scope="global" request is the only other way to
+    # get user_id=None besides the pre-existing shared-API-key-caller path
+    # -- gated to admin, checked before any side effect (same "validate
+    # first" shape as every rollback below).
+    if request.scope == "global":
+        _require_admin(http_request)
+
     # spec-021: saved under the caller's own user id (None for a
-    # shared-API-key caller -- a global connection, exactly pre-spec-021
-    # behavior).
-    owner = _caller_user_id(http_request)
+    # shared-API-key caller or an admin's scope="global" request -- a
+    # global connection, exactly pre-spec-021 behavior for the former).
+    caller = _caller_user_id(http_request)
+    caller_role = _caller_role(http_request)
+    owner = None if request.scope == "global" else caller
     try:
         profile = add_connection(request.name, request.type, request.config, user_id=owner)
     except DuplicateConnectionError as e:
@@ -744,7 +803,7 @@ def create_connection(request: CreateConnectionRequest, http_request: Request) -
                     },
                 )
                 assert updated_profile is not None  # just written above, under the same (name, owner)
-                return _connection_info(updated_profile)
+                return _connection_info(updated_profile, caller, caller_role)
 
         # spec-019: an mcp_server connection's node types are generated
         # once, here, at creation -- not polled. A discovery failure rolls
@@ -759,7 +818,7 @@ def create_connection(request: CreateConnectionRequest, http_request: Request) -
                 status_code=502, detail=f"Connection saved config is valid, but tool discovery failed: {e}"
             ) from e
 
-    return _connection_info(profile)
+    return _connection_info(profile, caller, caller_role)
 
 
 def _mcp_oauth_redirect_uri(public_base_url: str) -> str:
@@ -880,10 +939,16 @@ def mcp_connection_oauth_callback(
         return _error_redirect(str(e))
 
     # Now that a real token exists, generate this connection's real node
-    # types for the connecting user -- deferred from create_connection,
-    # which had no token to list tools with.
+    # types -- deferred from create_connection, which had no token to list
+    # tools with. spec-023: owner_user_id must be the *profile's* real
+    # scope (None for a global connection the connecting user doesn't
+    # necessarily own), not claims.user_id -- discovery_user_id is what
+    # actually needs to be the connecting user, so their own fresh token is
+    # what's used to call tools/list.
     try:
-        generated_nodes.generate_node_types_for_connection(claims.connection_name, owner_user_id=claims.user_id)
+        generated_nodes.generate_node_types_for_connection(
+            claims.connection_name, owner_user_id=profile.user_id, discovery_user_id=claims.user_id
+        )
     except Exception as e:
         return _error_redirect(f"Connected, but tool discovery failed: {e}")
 
@@ -938,6 +1003,11 @@ def delete_connection_endpoint(name: str, http_request: Request) -> None:
     profile = resolve_connection_for_user(name, _caller_user_id(http_request))
     if profile is None:
         raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
+    # spec-023: a global connection is admin-managed -- a non-admin deleting
+    # their own private connection (profile.user_id is their own id) is
+    # completely unaffected by this check.
+    if profile.user_id is None:
+        _require_admin(http_request)
     delete_connection(name, user_id=profile.user_id)
     # spec-019: a no-op for any connection that never had generated node
     # types (every type except mcp_server) -- cheap and correct either way.
@@ -946,6 +1016,90 @@ def delete_connection_endpoint(name: str, http_request: Request) -> None:
     # avoids leaving a stored token orphaned once its connection is gone.
     if profile.type == "mcp_server" and profile.user_id is not None:
         oauth_token_storage.delete_token(profile.user_id, name)
+
+
+@app.put("/connections/{name}", response_model=ConnectionInfo)
+def update_connection_endpoint(name: str, request: UpdateConnectionRequest, http_request: Request) -> ConnectionInfo:
+    """spec-023: config mutation gets its own route -- update_connection_config
+    existed internally (spec-021, for persisting discovered OAuth client
+    info) but had no HTTP route of its own. Resolves the caller's own
+    private connection first, then falls back to a global one; a private
+    connection belonging to someone else is a 404 (same "don't reveal
+    existence" pattern used throughout this file), not distinguished from
+    "doesn't exist at all"."""
+    caller = _caller_user_id(http_request)
+    caller_role = _caller_role(http_request)
+    profile = get_connection(name, user_id=caller)
+    if profile is None:
+        profile = get_connection(name, user_id=None)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
+    if profile.user_id is None:
+        _require_admin(http_request)
+    definition = default_connection_registry.get(profile.type)
+    if definition is None:
+        raise HTTPException(status_code=422, detail=f"Unknown connection type: {profile.type!r}")
+    try:
+        definition.config_model.model_validate(request.config)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid config for '{profile.type}': {e}") from e
+    updated = update_connection_config(name, profile.user_id, request.config)
+    assert updated is not None  # just resolved above, under the same (name, profile.user_id)
+    return _connection_info(updated, caller, caller_role)
+
+
+@app.post("/connections/{name}/promote-to-global", response_model=ConnectionInfo)
+def promote_connection_to_global(name: str, http_request: Request) -> ConnectionInfo:
+    """spec-023: lets an admin turn their own existing private connection
+    into a global one without deleting and recreating it -- closes exactly
+    the situation a connection created before this spec existed is in
+    (private to whoever happened to create it, with no other way to make it
+    visible to every user). Carries the config over as-is (resolved open
+    question -- no re-discovery/re-registration). No token migration
+    needed: SPEC-021's oauth_token_storage is keyed by (connecting user,
+    connection name), never by the connection profile's own ownership, so
+    the admin's existing token for this connection (if any) stays valid
+    unchanged after promotion."""
+    _require_admin(http_request)
+    caller = _caller_user_id(http_request)
+    caller_role = _caller_role(http_request)
+    # Must be the admin's own private connection -- get_connection's
+    # exact-scope semantics naturally 404 both "someone else's" and
+    # "already global" without a separate check.
+    profile = get_connection(name, user_id=caller)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"No private connection named {name!r} owned by you")
+    updated = set_connection_owner(name, caller, None)
+    if updated is None:
+        raise HTTPException(status_code=409, detail=f"A global connection named {name!r} already exists")
+    if updated.type == "mcp_server":
+        try:
+            # spec-023: the promoting admin's own token (if they have one --
+            # e.g. they used this connection privately before promoting it,
+            # exactly the my-gmail situation this action exists for) is what
+            # discovery uses; the resulting node types are still named as
+            # global (owner_user_id=None), unaffected by whose token
+            # discovered them.
+            generated_nodes.generate_node_types_for_connection(name, owner_user_id=None, discovery_user_id=caller)
+        except Exception as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Promoted to global, but tool discovery failed: {e} -- retry via refresh-capabilities",
+            ) from e
+    return _connection_info(updated, caller, caller_role)
+
+
+@app.get("/connections/private-summary", response_model=list[PrivateConnectionSummary])
+def list_private_connections_summary(http_request: Request) -> list[PrivateConnectionSummary]:
+    """spec-023: admin-only, names/types/owners only -- never config or
+    secrets. Resolved open question: admin gets this much visibility into
+    other users' private connections for support/debugging, nothing more."""
+    _require_admin(http_request)
+    return [
+        PrivateConnectionSummary(user_id=c.user_id, name=c.name, type=c.type)
+        for c in list_connections_unscoped()
+        if c.user_id is not None
+    ]
 
 
 @app.post("/connections/{name}/refresh-capabilities", response_model=RefreshCapabilitiesResponse)
@@ -966,8 +1120,13 @@ def refresh_capabilities(name: str, http_request: Request) -> RefreshCapabilitie
         # (profile.user_id), not necessarily the caller -- a caller who
         # resolved to a global connection (profile.user_id is None) must
         # regenerate it as global, not accidentally claim it as their own.
+        # spec-023: discovery_user_id is always the actual caller, though --
+        # for a global connection, discovery needs *some* real user's token,
+        # and the caller triggering this refresh is the only one available
+        # in this context (their own token if they have one; a clear
+        # "reconnect" error via _server_config_for if they don't).
         generated_types = generated_nodes.generate_node_types_for_connection(
-            name, owner_user_id=profile.user_id
+            name, owner_user_id=profile.user_id, discovery_user_id=owner
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to refresh capabilities: {e}") from e

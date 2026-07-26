@@ -11,7 +11,7 @@ node-type-specific logic here.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from backend.connections.base import default_connection_registry
 from backend.execution.errors import NodeExecutionError
@@ -22,8 +22,8 @@ from backend.schema.types import TEXT
 
 
 class IngestDocumentConfig(BaseModel):
-    connection: str
-    embedding_model_connection: str
+    connection: str = Field(json_schema_extra={"connectionTypes": ["vector_store"]})
+    embedding_model_connection: str = Field(json_schema_extra={"connectionCapability": "supports_embedding"})
     embedding_model: str
     chunk_size: int = 500
     chunk_overlap: int = 50

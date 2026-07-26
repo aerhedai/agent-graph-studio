@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.execution.types import ExecutionContext, NodeResult
 from backend.integrations.telegram.manifest import CHAT_MANAGEMENT_METHODS
@@ -17,7 +17,7 @@ from backend.registry.decorators import register_node
 
 
 class TelegramChatManagementConfig(BaseModel):
-    bot_token_connection: str
+    bot_token_connection: str = Field(json_schema_extra={"connectionTypes": ["telegram"]})
     action: Literal["get_chat", "get_chat_member"]
 
 

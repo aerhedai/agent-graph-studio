@@ -166,6 +166,8 @@ function renderField(
       <ConnectionPicker
         value={typeof value === "string" ? value : undefined}
         onChange={(connectionName) => setField(name, connectionName)}
+        allowedTypes={propSchema.connectionTypes}
+        requiredCapability={propSchema.connectionCapability}
       />
     );
   }

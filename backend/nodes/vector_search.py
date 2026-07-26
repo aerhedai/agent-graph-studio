@@ -18,8 +18,8 @@ from backend.schema.types import TEXT
 
 
 class VectorSearchConfig(BaseModel):
-    connection: str
-    embedding_model_connection: str
+    connection: str = Field(json_schema_extra={"connectionTypes": ["vector_store"]})
+    embedding_model_connection: str = Field(json_schema_extra={"connectionCapability": "supports_embedding"})
     embedding_model: str
     top_k: int = Field(gt=0, default=5)
 

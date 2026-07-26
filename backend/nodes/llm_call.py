@@ -11,7 +11,13 @@ from backend.schema.types import TEXT
 
 
 class LLMCallConfig(BaseModel):
-    connection: str
+    # connectionCapability restricts the frontend's connection picker to
+    # types that can actually act as an LLMClient -- reuses
+    # supports_tool_calling (spec-008 §5) rather than a new flag, since
+    # every connection type registered with it today also supports plain
+    # .complete() and inventing a separate "is_llm_provider" flag would be
+    # speculative given there's no type where the two diverge yet.
+    connection: str = Field(json_schema_extra={"connectionCapability": "supports_tool_calling"})
     model: str
     system_prompt: str = ""
     max_tokens: int = Field(gt=0, default=1024)

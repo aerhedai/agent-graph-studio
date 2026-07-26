@@ -41,6 +41,21 @@ def _token_for(user_id: str, email: str) -> str:
     return auth_jwt.issue_token(user.id, user.email, user.role)
 
 
+def _admin_token_for(user_id: str, email: str) -> str:
+    """spec-023: a real admin-role user, for tests covering the new
+    admin-only global-connection mutation gate."""
+    users_store.ensure_admin_bootstrapped("admin@example.com", "2026-01-01T00:00:00+00:00")
+    user = users_store.create_user(
+        user_id=user_id,
+        email=email,
+        display_name=email,
+        role="admin",
+        created_at="2026-01-01T00:00:00+00:00",
+        invited_by=None,
+    )
+    return auth_jwt.issue_token(user.id, user.email, user.role)
+
+
 # --- store-level: exact scope, resolution policy, uniqueness -------------
 
 
@@ -209,12 +224,17 @@ def test_user_cannot_delete_another_users_connection():
     assert delete_as_a.status_code == 204
 
 
-def test_authenticated_human_can_still_manage_a_pre_existing_global_connection():
-    """Regression: a real signed-in user must still be able to see/delete
-    the shared-key-created global connections that predate spec-021 (the
-    existing single-operator workflow) -- resolve_connection_for_user's
-    "mine, falling back to global" policy is what makes this work."""
+def test_authenticated_human_can_see_but_not_delete_a_pre_existing_global_connection():
+    """spec-023: a real signed-in *non-admin* user can still see the
+    shared-key-created global connections that predate spec-021
+    (resolve_connection_for_user's "mine, falling back to global" policy,
+    unaffected) but can no longer delete/mutate one -- that's now
+    admin-only. An admin can still delete it, same as the shared key
+    itself always could (see test_admin_connections.py for the fuller
+    admin-gating suite; this one test stays here as the direct update to
+    the pre-spec-023 assertion it's replacing)."""
     token_a = _token_for("user-a", "a@example.com")
+    admin_token = _admin_token_for("admin-user", "admin2@example.com")
 
     create = client.post(
         "/connections", json={"name": "legacy-global", "type": "anthropic", "config": {"api_key": "sk-legacy"}}
@@ -225,4 +245,7 @@ def test_authenticated_human_can_still_manage_a_pre_existing_global_connection()
     assert "legacy-global" in {c["name"] for c in as_a.json()}
 
     delete_as_a = client.delete("/connections/legacy-global", headers={"Authorization": f"Bearer {token_a}"})
-    assert delete_as_a.status_code == 204
+    assert delete_as_a.status_code == 403
+
+    delete_as_admin = client.delete("/connections/legacy-global", headers={"Authorization": f"Bearer {admin_token}"})
+    assert delete_as_admin.status_code == 204

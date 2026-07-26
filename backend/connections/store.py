@@ -193,3 +193,28 @@ def update_connection_config(
         return None
     _save_all(profiles, path)
     return updated
+
+
+def set_connection_owner(
+    name: str, current_user_id: str | None, new_user_id: str | None, path: Path | None = None
+) -> ConnectionProfile | None:
+    """spec-023: the one mutation "promote to global" needs -- moves a
+    connection from `(current_user_id, name)` to `(new_user_id, name)`,
+    same read-modify-write shape as update_connection_config immediately
+    above. Returns None if the source doesn't exist, or if a connection
+    already exists at the destination `(new_user_id, name)` -- uniqueness
+    preserved exactly like add_connection's own check, never silently
+    overwrites an existing connection at the target scope."""
+    profiles = _load_all(path)
+    if any(c.name == name and c.user_id == new_user_id for c in profiles):
+        return None
+    updated: ConnectionProfile | None = None
+    for i, profile in enumerate(profiles):
+        if profile.name == name and profile.user_id == current_user_id:
+            updated = profile.model_copy(update={"user_id": new_user_id})
+            profiles[i] = updated
+            break
+    if updated is None:
+        return None
+    _save_all(profiles, path)
+    return updated
