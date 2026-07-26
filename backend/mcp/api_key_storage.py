@@ -106,6 +106,17 @@ def has_api_key(user_id: str, connection_name: str, path: Path | None = None) ->
     return row is not None
 
 
+def find_any_user_id(connection_name: str, path: Path | None = None) -> str | None:
+    """spec-025: the api_key counterpart of oauth_token_storage's own
+    find_any_user_id -- same startup-regeneration rationale, see there."""
+    with _connect(path) as conn:
+        row = conn.execute(
+            "SELECT user_id FROM mcp_api_keys WHERE connection_name = ? LIMIT 1",
+            (connection_name,),
+        ).fetchone()
+    return row[0] if row is not None else None
+
+
 def delete_api_key(user_id: str, connection_name: str, path: Path | None = None) -> bool:
     with _connect(path) as conn:
         cursor = conn.execute(

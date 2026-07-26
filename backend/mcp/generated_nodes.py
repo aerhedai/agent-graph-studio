@@ -34,7 +34,7 @@ from backend.connections.mcp_server_connection import McpServerConnectionConfig,
 from backend.connections.store import get_connection
 from backend.execution.errors import NodeExecutionError
 from backend.execution.types import ExecutionContext, NodeResult
-from backend.mcp import api_key_storage, oauth_flow, option_bindings
+from backend.mcp import api_key_storage, oauth_flow, oauth_token_storage, option_bindings
 from backend.mcp.client import McpToolInfo, coerce_value, default_terminal_approval
 from backend.mcp.transport import McpServerConfig, call_tool, list_tools
 from backend.registry.base import InputSlotSpec, NodeDefinition, NodeRegistry, OutputSlotSpec, default_registry
@@ -295,7 +295,19 @@ def regenerate_all_on_startup(path: Path | None = None, registry: NodeRegistry =
     spec-021: iterates `list_connections_unscoped`, not the caller-scoped
     `list_connections` -- startup has no caller, and every user's own
     mcp_server connections need their node types rebuilt, not just global
-    ones."""
+    ones.
+
+    spec-025: a *global* connection (owner_user_id is None) has no single
+    "owner" whose credential discovery could default to -- unlike a private
+    connection, where owner_user_id doubling as discovery_user_id is always
+    correct. Startup has no real caller to fall back to either, so this
+    looks up any one already-connected user's stored credential (whoever
+    actually connected it, e.g. the admin who set up my-gmail) and
+    discovers with that -- the same principle refresh-capabilities/
+    promote-to-global already rely on (node type *naming* stays global
+    regardless of whose token/key was used for discovery). If genuinely
+    nobody has connected yet, there's still nothing to discover with --
+    logged and skipped exactly as before, not a regression."""
     import logging
 
     from backend.connections.store import list_connections_unscoped
@@ -304,9 +316,20 @@ def regenerate_all_on_startup(path: Path | None = None, registry: NodeRegistry =
     for profile in list_connections_unscoped(path=path):
         if profile.type != "mcp_server":
             continue
+        discovery_user_id = profile.user_id
+        if profile.user_id is None:
+            config = McpServerConnectionConfig.model_validate(profile.config)
+            if config.auth_type != "oauth2":
+                discovery_user_id = api_key_storage.find_any_user_id(profile.name, path=path)
+            elif config.requires_oauth:
+                discovery_user_id = oauth_token_storage.find_any_user_id(profile.name, path=path)
         try:
             generate_node_types_for_connection(
-                profile.name, owner_user_id=profile.user_id, path=path, registry=registry
+                profile.name,
+                owner_user_id=profile.user_id,
+                discovery_user_id=discovery_user_id,
+                path=path,
+                registry=registry,
             )
         except Exception:
             logger.exception(

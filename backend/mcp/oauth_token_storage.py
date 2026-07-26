@@ -170,6 +170,22 @@ def get_token(user_id: str, connection_name: str, path: Path | None = None) -> M
     return McpOAuthTokenRow(**data)
 
 
+def find_any_user_id(connection_name: str, path: Path | None = None) -> str | None:
+    """spec-025: for a *global* connection, startup regeneration
+    (generated_nodes.regenerate_all_on_startup) has no specific caller to
+    discovery-as -- any one already-connected user's token is equally valid
+    for discovery (node type *naming* stays global regardless of whose
+    token was used, same principle SPEC-023's promote-to-global/
+    refresh-capabilities already rely on). Returns None if nobody has
+    connected yet, which is the genuine "nothing to discover with" case."""
+    with _connect(path) as conn:
+        row = conn.execute(
+            "SELECT user_id FROM mcp_oauth_tokens WHERE connection_name = ? LIMIT 1",
+            (connection_name,),
+        ).fetchone()
+    return row[0] if row is not None else None
+
+
 def delete_token(user_id: str, connection_name: str, path: Path | None = None) -> bool:
     with _connect(path) as conn:
         cursor = conn.execute(
