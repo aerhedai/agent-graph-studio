@@ -81,7 +81,7 @@ from backend.api.schemas import (
 )
 from backend.connections.base import default_connection_registry
 from backend.connections.errors import ConnectionNotFoundError, DuplicateConnectionError
-from backend.connections.mcp_server_connection import McpServerConnectionConfig
+from backend.connections.mcp_server_connection import McpServerConnectionConfig, transport_config
 from backend.connections.resolver import resolve_connection_profiles, resolve_connections
 from backend.connections.store import (
     add_connection,
@@ -96,6 +96,7 @@ from backend.connections.store import (
 )
 from backend.execution import approvals
 from backend.mcp import api_key_storage, generated_nodes, oauth_flow, oauth_token_storage, option_bindings
+from backend.mcp.client import McpConnectionError
 from backend.registry.base import default_registry, effective_inputs, effective_outputs
 from backend.schema.models import GraphSpec, NodeSpec
 from backend.storage import graph_sharing_store, graphs_store, runs_store, settings_store, users_store
@@ -831,11 +832,30 @@ def create_connection(request: CreateConnectionRequest, http_request: Request) -
         # no per-user token exists yet, so there's nothing to list tools
         # with. mcp_connection_oauth_callback (below) generates them for
         # real once the user actually connects.
+        #
+        # spec-025: real servers exist (Context7, kpidepot.com -- both
+        # confirmed live) whose discovery metadata advertises an
+        # authorization/token/registration endpoint that doesn't actually
+        # gate their tools at all (in kpidepot's case the advertised
+        # registration_endpoint doesn't even resolve to a real DCR
+        # response). Trusting advertised metadata over actual behavior
+        # forces users through a broken OAuth dance -- or, if the picker
+        # instead defaulted to api_key, a fake "paste a key" step -- for a
+        # server that needs neither. So an unauthenticated tools/list is
+        # tried FIRST; only a genuine failure there is treated as "this
+        # server actually requires OAuth."
         if config.transport == "remote" and not config.requires_oauth:
             try:
-                discovered = oauth_flow.discover_oauth_server(config.url)
-            except oauth_flow.McpOAuthError:
-                discovered = None
+                generated_nodes.list_tools(transport_config(config))
+                server_actually_needs_oauth = False
+            except McpConnectionError:
+                server_actually_needs_oauth = True
+            discovered = None
+            if server_actually_needs_oauth:
+                try:
+                    discovered = oauth_flow.discover_oauth_server(config.url)
+                except oauth_flow.McpOAuthError:
+                    discovered = None
             if discovered is not None:
                 client_id, client_secret = config.oauth_client_id, config.oauth_client_secret
                 if client_id is None:

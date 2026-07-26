@@ -22,7 +22,7 @@ import backend.mcp.generated_nodes as generated_nodes_module
 from backend.api.app import app
 from backend.auth import jwt as auth_jwt
 from backend.mcp import oauth_flow, oauth_token_storage
-from backend.mcp.client import McpToolInfo
+from backend.mcp.client import McpConnectionError, McpToolInfo
 from backend.storage import settings_store, users_store
 
 client = TestClient(app, headers={"Authorization": "Bearer test-api-key"})
@@ -81,11 +81,20 @@ def _create_oauth_connection(name: str, token: str) -> dict:
 
 
 def test_create_oauth_requiring_connection_registers_client_and_defers_node_generation():
+    """spec-025: create_connection now tries a plain, unauthenticated
+    tools/list FIRST (see its own docstring -- some real servers advertise
+    OAuth metadata that doesn't actually gate anything, confirmed live
+    against Context7 and kpidepot.com), so list_tools *is* called once here
+    -- but a genuinely OAuth-requiring server rejects that unauthenticated
+    call, which is exactly what real McpConnectionError represents. Node
+    generation is still correctly deferred either way."""
     token = _token_for("user-a", "a@example.com")
     _set_public_base_url()
-    with patch.object(generated_nodes_module, "list_tools") as fake_list_tools:
+    with patch.object(
+        generated_nodes_module, "list_tools", side_effect=McpConnectionError("401 Unauthorized")
+    ) as fake_list_tools:
         _create_oauth_connection("my-oauth-mcp", token)
-        fake_list_tools.assert_not_called()
+        assert fake_list_tools.call_count == 1
 
     node_types = client.get("/node-types", headers={"Authorization": f"Bearer {token}"}).json()
     assert not any("my-oauth-mcp" in t["type"] for t in node_types)
@@ -129,6 +138,36 @@ def test_create_non_oauth_remote_connection_is_completely_unaffected():
     assert response.status_code == 201
     node_types = client.get("/node-types", headers={"Authorization": f"Bearer {token}"}).json()
     assert any("plain-remote-mcp" in t["type"] for t in node_types)
+
+
+def test_server_advertising_real_oauth_metadata_but_not_actually_gating_tools_connects_immediately():
+    """spec-025: the exact real bug this phase fixed -- confirmed live
+    against Context7 and kpidepot.com, both of which advertise a real
+    authorization_endpoint/token_endpoint/registration_endpoint (unlike
+    test_create_non_oauth_remote_connection_is_completely_unaffected's
+    "not an OAuth server at all" case) but don't actually require a
+    credential to call their tools. discover_oauth_server here returns
+    valid-looking metadata rather than raising -- if create_connection
+    trusted that over the plain tools/list succeeding, this would
+    incorrectly kick off a broken OAuth dance instead of connecting
+    immediately. discover_oauth_server must never even be called once the
+    unauthenticated probe already succeeded."""
+    token = _token_for("user-a", "a@example.com")
+    with patch.object(oauth_flow, "discover_oauth_server") as fake_discover:
+        with patch.object(generated_nodes_module, "list_tools", return_value=[SEND_TOOL]):
+            response = client.post(
+                "/connections",
+                json={
+                    "name": "looks-like-oauth-but-isnt",
+                    "type": "mcp_server",
+                    "config": {"transport": "remote", "url": MCP_URL},
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert response.status_code == 201, response.text
+    fake_discover.assert_not_called()
+    node_types = client.get("/node-types", headers={"Authorization": f"Bearer {token}"}).json()
+    assert any("looks-like-oauth-but-isnt" in t["type"] for t in node_types)
 
 
 # --- /connections/oauth/start ----------------------------------------------
