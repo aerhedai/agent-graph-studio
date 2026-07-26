@@ -47,6 +47,16 @@ export interface JsonSchemaProperty {
   // `anyOf: [{type: "string"}, {type: "null"}]` rather than a flat
   // `type: "string"` -- no top-level `type` at all in that case.
   anyOf?: JsonSchemaProperty[];
+  // Connection-reference fields ("connection" / "*_connection") carry one
+  // of these two, set via Field(json_schema_extra=...) on the node's own
+  // config model -- restricts ConnectionPicker to types that are actually
+  // valid there, instead of showing every registered connection type
+  // regardless of the field. connectionTypes names specific types (e.g. a
+  // vector store field only makes sense for "vector_store"); connectionCapability
+  // names a ConnectionTypeInfo boolean field (e.g. "supports_embedding") for
+  // fields that accept any type with that capability, not one fixed type.
+  connectionTypes?: string[];
+  connectionCapability?: keyof ConnectionTypeInfo;
 }
 
 export interface JsonSchema {
@@ -137,6 +147,8 @@ export interface ConnectionTypeInfo {
   category: "local" | "cloud";
   config_schema: JsonSchema;
   supports_model_listing: boolean;
+  supports_tool_calling: boolean;
+  supports_embedding: boolean;
 }
 
 export interface ConnectionInfo {
@@ -147,6 +159,20 @@ export interface ConnectionInfo {
   // true once this caller has actually completed that login.
   requires_oauth: boolean;
   oauth_connected: boolean;
+  // spec-023: is_global -- visible to every platform user, admin-managed.
+  // can_manage -- true if the calling user may edit/delete this specific
+  // connection (their own private one, or any global one if they're an
+  // admin) -- computed server-side, never re-derived from role alone here.
+  is_global: boolean;
+  can_manage: boolean;
+}
+
+// spec-023: the admin-only "names only" view into other users' private
+// connections -- never config/secrets.
+export interface PrivateConnectionSummary {
+  user_id: string;
+  name: string;
+  type: string;
 }
 
 export interface TestConnectionResponse {

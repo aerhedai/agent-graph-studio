@@ -5,7 +5,9 @@ import {
   deleteConnection,
   fetchConnectionTypes,
   fetchConnections,
+  getMe,
   mcpOAuthStartUrl,
+  promoteConnectionToGlobal,
   testConnection,
 } from "../api/client";
 import type { ConnectionInfo, ConnectionTypeInfo } from "../api/types";
@@ -14,6 +16,12 @@ import { renderPrimitiveField } from "./fieldRenderers";
 interface ConnectionPickerProps {
   value: string | undefined;
   onChange: (connectionName: string) => void;
+  // spec-fix: restricts which connection types this picker shows/creates,
+  // derived from the field's own json_schema_extra (see JsonSchemaProperty).
+  // Undefined/empty means unrestricted -- the pre-fix behavior, kept as the
+  // fallback so a field with no filter metadata still works.
+  allowedTypes?: string[];
+  requiredCapability?: keyof ConnectionTypeInfo;
 }
 
 const CATEGORY_LABELS: Record<string, string> = { local: "Local", cloud: "Cloud" };
@@ -23,9 +31,9 @@ const CATEGORY_LABELS: Record<string, string> = { local: "Local", cloud: "Cloud"
 // hardcoded to "anthropic"/"ollama" by name), fields auto-rendered from
 // that type's config_schema, gated behind a real "Test Connection" round-
 // trip before "Save" is enabled (spec-006 §3/§6).
-export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
-  const [connections, setConnections] = useState<ConnectionInfo[]>([]);
-  const [connectionTypes, setConnectionTypes] = useState<ConnectionTypeInfo[]>([]);
+export function ConnectionPicker({ value, onChange, allowedTypes, requiredCapability }: ConnectionPickerProps) {
+  const [allConnections, setAllConnections] = useState<ConnectionInfo[]>([]);
+  const [allConnectionTypes, setAllConnectionTypes] = useState<ConnectionTypeInfo[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
 
@@ -33,29 +41,57 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
   const [activeType, setActiveType] = useState<string | null>(null);
   const [draftName, setDraftName] = useState("");
   const [draftConfig, setDraftConfig] = useState<Record<string, unknown>>({});
+  const [draftScope, setDraftScope] = useState<"private" | "global">("private");
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [promoting, setPromoting] = useState(false);
+  // spec-023: only an admin can create/edit/delete a global connection --
+  // the picker needs to know the caller's own role to show that choice at
+  // all, same getMe() SettingsPanel.tsx already fetches for its own
+  // admin-only "Invite a user" section.
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  function isTypeAllowed(t: ConnectionTypeInfo): boolean {
+    if (allowedTypes && allowedTypes.length > 0) return allowedTypes.includes(t.type);
+    if (requiredCapability) return t[requiredCapability] === true;
+    return true;
+  }
+
+  // Every list/tab/dropdown below is derived from these two, never from
+  // the unfiltered fetch results directly -- so "+ New connection", the
+  // category tabs, the existing-connection dropdown, and Delete can only
+  // ever touch a type-appropriate connection for whichever field this
+  // picker instance renders.
+  const connectionTypes = allConnectionTypes.filter(isTypeAllowed);
+  const connections = allConnections.filter((c) => connectionTypes.some((t) => t.type === c.type));
 
   function loadLists() {
     return Promise.all([fetchConnections(), fetchConnectionTypes()]).then(
       ([conns, types]) => {
-        setConnections(conns);
-        setConnectionTypes(types);
-        if (activeCategory === null && types.length > 0) {
-          setActiveCategory(types[0].category);
-          setActiveType(types[0].type);
-        }
+        setAllConnections(conns);
+        setAllConnectionTypes(types);
       },
     );
   }
 
   useEffect(() => {
     loadLists().catch((e: unknown) => setLoadError(String(e)));
+    getMe()
+      .then((me) => setIsAdmin(me.role === "admin"))
+      .catch(() => setIsAdmin(false)); // a shared-API-key caller has no `me` -- treated as non-admin here (UI only; server-side it's unrestricted, see _require_admin's own docstring)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (activeCategory !== null) return;
+    if (connectionTypes.length === 0) return;
+    setActiveCategory(connectionTypes[0].category);
+    setActiveType(connectionTypes[0].type);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionTypes.length]);
 
   const categories = Array.from(new Set(connectionTypes.map((t) => t.category)));
   const typesInActiveCategory = connectionTypes.filter((t) => t.category === activeCategory);
@@ -97,12 +133,13 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
     setSaving(true);
     setFormError(null);
     try {
-      await createConnection(draftName, activeType, draftConfig);
+      await createConnection(draftName, activeType, draftConfig, draftScope);
       await loadLists();
       onChange(draftName);
       setShowForm(false);
       setDraftName("");
       setDraftConfig({});
+      setDraftScope("private");
       setTestResult(null);
     } catch (e) {
       setFormError(String(e));
@@ -113,8 +150,12 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
 
   // spec-018: replaces the curl-only DELETE /connections/{name} workaround
   // -- deletes whichever connection is currently selected in the dropdown.
+  // spec-023: can_manage is the real (server-computed) source of truth --
+  // this guard plus the button's own `disabled` below are both UI-side
+  // reflections of it, not the enforcement itself (that's the 403 on the
+  // server).
   async function handleDelete() {
-    if (!value) return;
+    if (!value || !selectedConnection?.can_manage) return;
     if (!window.confirm(`Delete connection "${value}"? This can't be undone.`)) return;
     setDeleting(true);
     setLoadError(null);
@@ -129,8 +170,27 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
     }
   }
 
+  // spec-023: closes the exact "created before this spec existed, no other
+  // way to make it visible to every user" situation -- an admin turning
+  // their own private connection into a global one in place.
+  async function handlePromote() {
+    if (!value) return;
+    if (!window.confirm(`Make "${value}" a global connection, visible to every user?`)) return;
+    setPromoting(true);
+    setLoadError(null);
+    try {
+      await promoteConnectionToGlobal(value);
+      await loadLists();
+    } catch (e) {
+      setLoadError(String(e));
+    } finally {
+      setPromoting(false);
+    }
+  }
+
   const selectedConnection = connections.find((c) => c.name === value);
   const needsOAuthConnect = selectedConnection?.requires_oauth && !selectedConnection.oauth_connected;
+  const canPromote = isAdmin && !!selectedConnection && !selectedConnection.is_global && selectedConnection.can_manage;
 
   return (
     <div className="connection-picker">
@@ -148,25 +208,49 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
             </option>
             {connections.map((c) => (
               <option key={c.name} value={c.name}>
-                {c.name} ({c.type})
+                {c.name} ({c.type}){c.is_global ? " — global" : ""}
                 {c.requires_oauth ? (c.oauth_connected ? " ✓ connected" : " — needs OAuth") : ""}
               </option>
             ))}
           </select>
           <ChevronDown className="select-wrap__chevron" size={14} />
         </span>
-        <button type="button" className="btn btn--secondary" onClick={() => setShowForm((s) => !s)}>
+        <button
+          type="button"
+          className="btn btn--secondary"
+          onClick={() => {
+            setShowForm((s) => !s);
+            setDraftScope("private");
+          }}
+        >
           {showForm ? "Cancel" : "+ New connection"}
         </button>
         <button
           type="button"
           className="btn btn--secondary"
           onClick={() => void handleDelete()}
-          disabled={!value || deleting}
-          title={value ? `Delete "${value}"` : "Select a connection first"}
+          disabled={!value || deleting || !selectedConnection?.can_manage}
+          title={
+            !value
+              ? "Select a connection first"
+              : selectedConnection?.can_manage
+                ? `Delete "${value}"`
+                : "Only an admin can delete a global connection"
+          }
         >
           {deleting ? "Deleting..." : "Delete"}
         </button>
+        {canPromote && (
+          <button
+            type="button"
+            className="btn btn--secondary"
+            onClick={() => void handlePromote()}
+            disabled={promoting}
+            title={`Make "${value}" visible to every user`}
+          >
+            {promoting ? "Promoting..." : "Promote to global"}
+          </button>
+        )}
       </div>
 
       {needsOAuthConnect && (
@@ -230,6 +314,27 @@ export function ConnectionPicker({ value, onChange }: ConnectionPickerProps) {
               placeholder="e.g. my-pc-ollama"
             />
           </div>
+
+          {isAdmin && (
+            // spec-023: a non-admin never sees this choice at all -- their
+            // connections are always private, exactly the pre-spec-023
+            // behavior. Global is admin-only, both here and enforced
+            // server-side.
+            <div className="config-panel__field">
+              <label htmlFor="connection-draft-scope">Visibility</label>
+              <span className="select-wrap">
+                <select
+                  id="connection-draft-scope"
+                  value={draftScope}
+                  onChange={(e) => setDraftScope(e.target.value as "private" | "global")}
+                >
+                  <option value="private">Private -- only me</option>
+                  <option value="global">Global -- every user</option>
+                </select>
+                <ChevronDown className="select-wrap__chevron" size={14} />
+              </span>
+            </div>
+          )}
 
           {activeTypeInfo &&
             (() => {

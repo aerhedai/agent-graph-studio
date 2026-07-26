@@ -21,7 +21,9 @@ from backend.registry.decorators import register_node
 
 
 class ModelConfig(BaseModel):
-    connection: str
+    # See llm_call.py's LLMCallConfig.connection docstring -- same
+    # capability-based filter, same reasoning.
+    connection: str = Field(json_schema_extra={"connectionCapability": "supports_tool_calling"})
     model: str
     system_prompt: str = ""
     max_tokens: int = Field(gt=0, default=1024)

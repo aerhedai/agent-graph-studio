@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -185,12 +185,41 @@ class ConnectionInfo(BaseModel):
     """spec-021: true once *this specific owner* has completed that OAuth
     login (a real token is stored). Always false for a connection that
     doesn't require OAuth in the first place."""
+    is_global: bool = False
+    """spec-023: true if this connection has no owner (user_id is None) --
+    visible to every platform user, admin-managed."""
+    can_manage: bool = True
+    """spec-023: true if the calling user may edit/delete this specific
+    connection -- their own private connection, or any global one if
+    they're an admin. Computed server-side (see _connection_info) so the
+    frontend never has to re-derive this from role + ownership itself."""
 
 
 class CreateConnectionRequest(BaseModel):
     name: str
     type: str
     config: dict[str, Any] = {}
+    scope: Literal["private", "global"] = "private"
+    """spec-023: "global" is only honored for an admin caller -- creating a
+    connection visible to every platform user, not just its creator. Any
+    other caller gets 403, not a silent downgrade to private."""
+
+
+class UpdateConnectionRequest(BaseModel):
+    config: dict[str, Any]
+    """spec-023: name/type never change after creation, same as every
+    other connection mutation in this codebase -- only config is
+    editable."""
+
+
+class PrivateConnectionSummary(BaseModel):
+    """spec-023: the admin "names only" view into other users' private
+    connections -- never config/secrets, just enough for support/debugging
+    (resolved open question: names only, not full visibility)."""
+
+    user_id: str
+    name: str
+    type: str
 
 
 class TestConnectionRequest(BaseModel):

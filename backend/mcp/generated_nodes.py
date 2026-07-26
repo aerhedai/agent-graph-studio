@@ -121,8 +121,18 @@ def _make_execute(
         if profile is None:
             raise NodeExecutionError(f"mcp_server connection '{resolve_name}' no longer exists")
         config = McpServerConnectionConfig.model_validate(profile.config)
+        # spec-023: for a *global* connection (profile.user_id is None),
+        # the OAuth token to attach is always the actual running user's own
+        # -- any signed-in user independently connects their own account to
+        # the same global profile (SPEC-021's per-caller token storage
+        # already supports this; slot_mappings above is a different concern
+        # -- substituting to a *different* connection entirely for a shared
+        # graph -- and doesn't apply here since there's only one profile).
+        # A private connection's resolve_owner is untouched (still the
+        # exact owner resolved above).
+        token_user_id = running_user_id if profile.user_id is None else resolve_owner
         try:
-            server_config = _server_config_for(config, resolve_name, resolve_owner)
+            server_config = _server_config_for(config, resolve_name, token_user_id)
         except oauth_flow.McpOAuthError as e:
             raise NodeExecutionError(str(e)) from e
 
@@ -163,6 +173,7 @@ def unregister_for_connection(
 def generate_node_types_for_connection(
     connection_name: str,
     owner_user_id: str | None = None,
+    discovery_user_id: str | None = None,
     path: Path | None = None,
     registry: NodeRegistry = default_registry,
 ) -> list[str]:
@@ -170,15 +181,29 @@ def generate_node_types_for_connection(
     type per tool. Idempotent and safe to call again as a refresh --
     discovery runs *before* the connection's prior generated set is torn
     down, so a failed refresh (server unreachable) leaves the previously-
-    working node set intact rather than wiping it out."""
+    working node set intact rather than wiping it out.
+
+    spec-023: `owner_user_id` controls type *naming* (unchanged -- None for
+    a global connection, the real owner for a private one) and is entirely
+    separate from `discovery_user_id`, whose *token* (if the connection
+    requires OAuth) is used to actually call tools/list. These are the same
+    value for a private connection (its owner is the only one who'd ever
+    discover it) but must differ for a global one -- there's no single
+    "owner" token to use, only whichever real user is triggering discovery
+    right now (the OAuth callback's own connecting user, or whoever hit
+    refresh-capabilities/promote-to-global) has one. Defaults to
+    owner_user_id when not given, so every pre-spec-023 caller (private
+    connections only) is unaffected."""
     profile = get_connection(connection_name, user_id=owner_user_id, path=path)
     if profile is None:
         raise ValueError(f"Connection '{connection_name}' does not exist")
     if profile.type != "mcp_server":
         raise ValueError(f"Connection '{connection_name}' is not an mcp_server connection")
 
+    if discovery_user_id is None:
+        discovery_user_id = owner_user_id
     config = McpServerConnectionConfig.model_validate(profile.config)
-    server_config = _server_config_for(config, connection_name, owner_user_id)
+    server_config = _server_config_for(config, connection_name, discovery_user_id)
     tools = list_tools(server_config)  # raises McpConnectionError before anything is torn down
 
     unregister_for_connection(connection_name, owner_user_id=owner_user_id, registry=registry)

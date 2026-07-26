@@ -23,7 +23,7 @@ generic_adapter.py's docstring for why.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.execution.errors import NodeExecutionError
 from backend.execution.types import ExecutionContext, NodeResult
@@ -33,7 +33,7 @@ from backend.schema.types import TEXT
 
 
 class TelegramAdapterConfig(BaseModel):
-    bot_token_connection: str
+    bot_token_connection: str = Field(json_schema_extra={"connectionTypes": ["telegram"]})
 
 
 @register_node(

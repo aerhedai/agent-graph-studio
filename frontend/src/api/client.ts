@@ -11,6 +11,7 @@ import type {
   MeResponse,
   MissingSlotInfo,
   NodeTypeInfo,
+  PrivateConnectionSummary,
   ResolveSlotsResponse,
   RunListResponse,
   RunStatusResponse,
@@ -199,11 +200,36 @@ export function createConnection(
   name: string,
   type: string,
   config: Record<string, unknown>,
+  scope: "private" | "global" = "private",
 ): Promise<ConnectionInfo> {
   return request<ConnectionInfo>("/connections", {
     method: "POST",
-    body: JSON.stringify({ name, type, config }),
+    body: JSON.stringify({ name, type, config, scope }),
   });
+}
+
+// spec-023: config mutation for an already-saved connection -- admin-only
+// for a global one, owner-only for a private one (backend-enforced; this
+// is just the client call, not the source of truth).
+export function updateConnection(name: string, config: Record<string, unknown>): Promise<ConnectionInfo> {
+  return request<ConnectionInfo>(`/connections/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: JSON.stringify({ config }),
+  });
+}
+
+// spec-023: turns the caller's own private connection into a global one,
+// config carried over as-is -- admin-only.
+export function promoteConnectionToGlobal(name: string): Promise<ConnectionInfo> {
+  return request<ConnectionInfo>(`/connections/${encodeURIComponent(name)}/promote-to-global`, {
+    method: "POST",
+  });
+}
+
+// spec-023: admin-only "names only" view into other users' private
+// connections, for support/debugging -- never config or secrets.
+export function fetchPrivateConnectionsSummary(): Promise<PrivateConnectionSummary[]> {
+  return request<PrivateConnectionSummary[]>("/connections/private-summary");
 }
 
 // Omit type/config to re-test an already-saved connection by name; pass
