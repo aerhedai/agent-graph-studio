@@ -52,6 +52,29 @@ class McpServerConnectionConfig(BaseModel):
     operator to add) -- requesting an unapproved scope would otherwise fail
     at Google's own consent screen. Falls back to the discovered
     scopes_supported only if left unset."""
+    credential_type: str | None = None
+    """spec-025: a named, reusable auth requirement (e.g.
+    "google_gmail_oauth2") distinct from this connection instance and from
+    the storage type ("mcp_server") -- lets a node's connection field
+    declare "needs a Gmail-authenticated connection specifically" and the
+    picker filter to just the caller's own connections tagged with it,
+    even when they hold several (e.g. "Work Gmail", "Personal Gmail").
+    Purely descriptive metadata; nothing here validates or enforces it
+    beyond the picker filter itself."""
+    auth_type: Literal["oauth2", "api_key", "bearer"] = "oauth2"
+    """spec-025: a parallel, simpler auth path alongside the existing OAuth
+    one -- some MCP servers (or the apps behind them) authenticate via a
+    plain API key/bearer token a user generates themselves, not a full
+    OAuth consent flow. Each user who connects pastes *their own* key,
+    stored per-user in backend/mcp/api_key_storage.py (never a single
+    connection-wide secret -- same "bring your own credentials" principle
+    as OAuth tokens already being per-user). "api_key" and "bearer" both
+    attach the same way (Authorization: Bearer <key>, matching every real
+    MCP server this project has actually integrated with) -- the two
+    labels exist for UI intent ("paste an API key you generated" vs "paste
+    a bearer token you already have"), not two different header schemes;
+    if a real app needs a genuinely different placement (query param,
+    custom header name), extend this then, not preemptively now."""
 
     @model_validator(mode="after")
     def _check_transport_fields(self) -> "McpServerConnectionConfig":
@@ -89,6 +112,12 @@ def test_connection(config: McpServerConnectionConfig) -> ConnectionTestResult:
     # specific user's real tools through it. That live check happens via
     # generate_node_types_for_connection (backend/mcp/generated_nodes.py),
     # called from app.py routes that do have a real user_id.
+    if config.auth_type != "oauth2":
+        return ConnectionTestResult(
+            success=True,
+            message="This connection needs a personal API key/bearer token per user -- "
+            "connect it (Settings -> Connections) to see and use its real tools.",
+        )
     if config.requires_oauth:
         return ConnectionTestResult(
             success=True,

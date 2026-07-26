@@ -34,7 +34,7 @@ from backend.connections.mcp_server_connection import McpServerConnectionConfig,
 from backend.connections.store import get_connection
 from backend.execution.errors import NodeExecutionError
 from backend.execution.types import ExecutionContext, NodeResult
-from backend.mcp import oauth_flow
+from backend.mcp import api_key_storage, oauth_flow, option_bindings
 from backend.mcp.client import McpToolInfo, coerce_value, default_terminal_approval
 from backend.mcp.transport import McpServerConfig, call_tool, list_tools
 from backend.registry.base import InputSlotSpec, NodeDefinition, NodeRegistry, OutputSlotSpec, default_registry
@@ -51,8 +51,34 @@ def _server_config_for(
     Raises oauth_flow.McpOAuthError (unwrapped) if there's no owner or no
     stored token yet -- callers during discovery/generation let this
     propagate as-is; `_make_execute`'s execute() wraps it as a
-    NodeExecutionError, the one context where that's the right shape."""
+    NodeExecutionError, the one context where that's the right shape.
+
+    spec-025: `auth_type != "oauth2"` is a parallel, independent path --
+    a per-user API key/bearer token instead of a full OAuth handshake.
+    Reuses oauth_flow.McpOAuthError for the same "missing credential"
+    signal rather than introducing a second exception type every existing
+    catch site would need to know about -- the class's own meaning is
+    already "no usable credential for this connection yet", not literally
+    "an OAuth-specific error"."""
     base = transport_config(config)
+    if config.auth_type != "oauth2":
+        if owner_user_id is None:
+            raise oauth_flow.McpOAuthError(
+                f"mcp_server connection '{connection_name}' needs a personal API key but has no owning user"
+            )
+        api_key = api_key_storage.get_api_key(owner_user_id, connection_name)
+        if api_key is None:
+            raise oauth_flow.McpOAuthError(
+                f"mcp_server connection '{connection_name}' needs a personal API key -- "
+                "connect it first (Settings -> Connections)"
+            )
+        return McpServerConfig(
+            transport=base.transport,
+            command=base.command,
+            args=base.args,
+            url=base.url,
+            headers={**base.headers, "Authorization": f"Bearer {api_key}"},
+        )
     if not config.requires_oauth:
         return base
     if owner_user_id is None:
@@ -67,6 +93,16 @@ def _server_config_for(
         url=base.url,
         headers={**base.headers, "Authorization": f"Bearer {token}"},
     )
+
+
+def server_config_for_execution(
+    config: McpServerConnectionConfig, connection_name: str, token_user_id: str | None
+) -> McpServerConfig:
+    """spec-025 Phase 5: the public entry point to `_server_config_for` for
+    an ad hoc real-time tool call outside the generated-node execute path
+    (currently just POST /node-types/{type}/options/{field}) -- callers
+    outside this module use this, never the underscore-prefixed one."""
+    return _server_config_for(config, connection_name, token_user_id)
 
 
 class _EmptyConfig(BaseModel):
@@ -168,6 +204,7 @@ def unregister_for_connection(
 ) -> None:
     for type_name in _generated_types_by_connection.pop((owner_user_id, connection_name), []):
         registry.unregister(type_name)
+        option_bindings.unregister_for_node_type(type_name)
 
 
 def generate_node_types_for_connection(
@@ -208,6 +245,14 @@ def generate_node_types_for_connection(
 
     unregister_for_connection(connection_name, owner_user_id=owner_user_id, registry=registry)
 
+    # spec-025 Phase 5: duck-typed detection of a recognized server shape --
+    # any connection whose live tool list matches gets its dynamic-options
+    # binding wired automatically, regardless of what the user named the
+    # connection. See option_bindings.py's own module docstring for why this
+    # is "hand-curated per distinct server integration", not per instance.
+    tool_names = {tool.name for tool in tools}
+    is_context7_shaped = {"resolve-library-id", "query-docs"}.issubset(tool_names)
+
     created: list[str] = []
     for tool in tools:
         type_name = type_name_for(connection_name, tool.name, owner_user_id)
@@ -228,6 +273,10 @@ def generate_node_types_for_connection(
             )
         )
         created.append(type_name)
+        if is_context7_shaped and tool.name == "query-docs":
+            option_bindings.register_option_binding(
+                type_name, "libraryId", option_bindings.context7_query_docs_binding()
+            )
 
     _generated_types_by_connection[(owner_user_id, connection_name)] = created
     return created

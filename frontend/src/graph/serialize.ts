@@ -17,6 +17,7 @@ export function nodesAndEdgesToGraphSpec(
     id: n.id,
     type: n.data.nodeType,
     config: n.data.config,
+    input_values: n.data.inputValues ?? {},
   }));
 
   // spec-012: an edge whose source is the reserved sub-node handle is a
@@ -107,6 +108,9 @@ export async function graphSpecToNodesAndEdges(
         subNodeSlots: typeInfo.sub_node_slots ?? null,
         subNodeRole: typeInfo.sub_node_role ?? null,
         resolveSlotsFromSubNode: typeInfo.resolve_slots_from_sub_node ?? null,
+        inputValues: n.input_values ?? {},
+        dynamicOptionSlots: typeInfo.dynamic_option_slots ?? [],
+        integration: typeInfo.integration ?? null,
       };
       return {
         id: n.id,

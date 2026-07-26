@@ -1,6 +1,7 @@
 import { ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
+  connectMcpOAuthViaPopup,
   createConnection,
   deleteConnection,
   fetchConnectionTypes,
@@ -8,6 +9,7 @@ import {
   getMe,
   mcpOAuthStartUrl,
   promoteConnectionToGlobal,
+  setConnectionApiKey,
   testConnection,
 } from "../api/client";
 import type { ConnectionInfo, ConnectionTypeInfo } from "../api/types";
@@ -22,6 +24,12 @@ interface ConnectionPickerProps {
   // fallback so a field with no filter metadata still works.
   allowedTypes?: string[];
   requiredCapability?: keyof ConnectionTypeInfo;
+  // spec-025: unlike allowedTypes/requiredCapability (which filter which
+  // connection *types* are allowed at all), this filters individual
+  // *connections* by their own tagged credential_type -- e.g. only "Work
+  // Gmail"/"Personal Gmail" out of every mcp_server connection the caller
+  // has, when a field declares it needs "google_gmail_oauth2" specifically.
+  requiredCredentialType?: string;
 }
 
 const CATEGORY_LABELS: Record<string, string> = { local: "Local", cloud: "Cloud" };
@@ -31,7 +39,13 @@ const CATEGORY_LABELS: Record<string, string> = { local: "Local", cloud: "Cloud"
 // hardcoded to "anthropic"/"ollama" by name), fields auto-rendered from
 // that type's config_schema, gated behind a real "Test Connection" round-
 // trip before "Save" is enabled (spec-006 §3/§6).
-export function ConnectionPicker({ value, onChange, allowedTypes, requiredCapability }: ConnectionPickerProps) {
+export function ConnectionPicker({
+  value,
+  onChange,
+  allowedTypes,
+  requiredCapability,
+  requiredCredentialType,
+}: ConnectionPickerProps) {
   const [allConnections, setAllConnections] = useState<ConnectionInfo[]>([]);
   const [allConnectionTypes, setAllConnectionTypes] = useState<ConnectionTypeInfo[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -48,6 +62,9 @@ export function ConnectionPicker({ value, onChange, allowedTypes, requiredCapabi
   const [formError, setFormError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [promoting, setPromoting] = useState(false);
+  const [apiKeyDraft, setApiKeyDraft] = useState("");
+  const [settingApiKey, setSettingApiKey] = useState(false);
+  const [apiKeyError, setApiKeyError] = useState<string | null>(null);
   // spec-023: only an admin can create/edit/delete a global connection --
   // the picker needs to know the caller's own role to show that choice at
   // all, same getMe() SettingsPanel.tsx already fetches for its own
@@ -66,7 +83,11 @@ export function ConnectionPicker({ value, onChange, allowedTypes, requiredCapabi
   // ever touch a type-appropriate connection for whichever field this
   // picker instance renders.
   const connectionTypes = allConnectionTypes.filter(isTypeAllowed);
-  const connections = allConnections.filter((c) => connectionTypes.some((t) => t.type === c.type));
+  const connections = allConnections.filter(
+    (c) =>
+      connectionTypes.some((t) => t.type === c.type) &&
+      (!requiredCredentialType || c.credential_type === requiredCredentialType),
+  );
 
   function loadLists() {
     return Promise.all([fetchConnections(), fetchConnectionTypes()]).then(
@@ -188,8 +209,51 @@ export function ConnectionPicker({ value, onChange, allowedTypes, requiredCapabi
     }
   }
 
+  // spec-025: the api_key/bearer counterpart of handlePromote's own
+  // "paste in hand, no redirect" shape -- unlike OAuth, there's no
+  // provider consent screen to send the user to.
+  async function handleSetApiKey() {
+    if (!value || !apiKeyDraft.trim()) return;
+    setSettingApiKey(true);
+    setApiKeyError(null);
+    try {
+      await setConnectionApiKey(value, apiKeyDraft.trim());
+      setApiKeyDraft("");
+      await loadLists();
+    } catch (e) {
+      setApiKeyError(String(e));
+    } finally {
+      setSettingApiKey(false);
+    }
+  }
+
+  // spec-025: popup-based OAuth connect -- doesn't navigate the canvas away
+  // at all; the plain <a href> below stays as the fallback for a blocked
+  // popup (some browsers/embedded contexts disallow window.open).
+  const [poppingUp, setPoppingUp] = useState(false);
+  const [popupError, setPopupError] = useState<string | null>(null);
+
+  async function handleConnectViaPopup() {
+    if (!value) return;
+    setPoppingUp(true);
+    setPopupError(null);
+    try {
+      const result = await connectMcpOAuthViaPopup(value);
+      if (result.error) {
+        setPopupError(result.error);
+      } else {
+        await loadLists();
+      }
+    } catch (e) {
+      setPopupError(String(e));
+    } finally {
+      setPoppingUp(false);
+    }
+  }
+
   const selectedConnection = connections.find((c) => c.name === value);
   const needsOAuthConnect = selectedConnection?.requires_oauth && !selectedConnection.oauth_connected;
+  const needsApiKey = selectedConnection && selectedConnection.auth_type !== "oauth2" && !selectedConnection.api_key_connected;
   const canPromote = isAdmin && !!selectedConnection && !selectedConnection.is_global && selectedConnection.can_manage;
 
   return (
@@ -210,6 +274,7 @@ export function ConnectionPicker({ value, onChange, allowedTypes, requiredCapabi
               <option key={c.name} value={c.name}>
                 {c.name} ({c.type}){c.is_global ? " — global" : ""}
                 {c.requires_oauth ? (c.oauth_connected ? " ✓ connected" : " — needs OAuth") : ""}
+                {c.auth_type !== "oauth2" ? (c.api_key_connected ? " ✓ connected" : " — needs API key") : ""}
               </option>
             ))}
           </select>
@@ -221,6 +286,12 @@ export function ConnectionPicker({ value, onChange, allowedTypes, requiredCapabi
           onClick={() => {
             setShowForm((s) => !s);
             setDraftScope("private");
+            // spec-025: pre-fill so a connection created from this field
+            // is tagged correctly without the user needing to retype the
+            // credential type slug by hand.
+            if (requiredCredentialType) {
+              setDraftConfig((c) => ({ ...c, credential_type: requiredCredentialType }));
+            }
           }}
         >
           {showForm ? "Cancel" : "+ New connection"}
@@ -260,12 +331,41 @@ export function ConnectionPicker({ value, onChange, allowedTypes, requiredCapabi
         // (via a URL fragment Canvas.tsx already parses) once complete.
         <div className="connection-picker__test-result failure">
           <span>"{value}" needs to be connected before its tools will work.</span>
+          <button type="button" className="btn btn--primary" onClick={() => void handleConnectViaPopup()} disabled={poppingUp}>
+            {poppingUp ? "Connecting..." : "Connect"}
+          </button>
           <a
-            className="btn btn--primary"
+            className="btn btn--secondary"
             href={mcpOAuthStartUrl(value ?? "", window.location.origin + window.location.pathname)}
           >
-            Connect
+            Connect (full page)
           </a>
+          {popupError && <div className="config-panel__error">{popupError}</div>}
+        </div>
+      )}
+
+      {needsApiKey && (
+        // spec-025: the api_key/bearer counterpart of the OAuth "Connect"
+        // block above -- no redirect, the caller pastes a key they
+        // already generated (from the app's own developer/API settings)
+        // and submits it directly.
+        <div className="connection-picker__test-result failure">
+          <span>"{value}" needs your personal API key/bearer token before its tools will work.</span>
+          <input
+            type="password"
+            value={apiKeyDraft}
+            onChange={(e) => setApiKeyDraft(e.target.value)}
+            placeholder="Paste your API key"
+          />
+          <button
+            type="button"
+            className="btn btn--primary"
+            onClick={() => void handleSetApiKey()}
+            disabled={settingApiKey || !apiKeyDraft.trim()}
+          >
+            {settingApiKey ? "Saving..." : "Connect"}
+          </button>
+          {apiKeyError && <div className="config-panel__error">{apiKeyError}</div>}
         </div>
       )}
 

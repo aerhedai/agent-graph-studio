@@ -66,10 +66,30 @@ class NodeTypeInfo(BaseModel):
     "Messaging"). None for dynamically-generated MCP nodes, which have no
     curated grouping -- the palette renders those as Apps -> connection ->
     tool instead of the 3-level Apps -> App -> capability_group shape."""
+    dynamic_option_slots: list[str] = []
+    """spec-025 Phase 5: which of this type's input slot names have a live-
+    fetched dropdown available (backend/mcp/option_bindings.py) -- lets the
+    canvas render those specific slots as a dropdown instead of the plain
+    literal-value text field every other unwired input slot gets (SPEC-025
+    Phase 0), without hardcoding any field/tool name client-side."""
 
 
 class ResolveSlotsRequest(BaseModel):
     config: dict[str, Any] = {}
+
+
+class ResolveOptionsRequest(BaseModel):
+    connection_name: str
+    current_config: dict[str, Any] = {}
+    """spec-025 Phase 5: the field's own in-progress value (and any other
+    already-filled sibling values) -- lets a binding forward a partially
+    typed search term to its source_tool, mirroring resolve-slots' own
+    "config" body shape."""
+
+
+class OptionItem(BaseModel):
+    label: str
+    value: str
 
 
 class ResolveSlotsResponse(BaseModel):
@@ -193,6 +213,18 @@ class ConnectionInfo(BaseModel):
     connection -- their own private connection, or any global one if
     they're an admin. Computed server-side (see _connection_info) so the
     frontend never has to re-derive this from role + ownership itself."""
+    credential_type: str | None = None
+    """spec-025: this connection's named auth requirement (e.g.
+    "google_gmail_oauth2"), if any -- lets the picker filter to just the
+    connections matching a node's declared credentialType."""
+    auth_type: Literal["oauth2", "api_key", "bearer"] = "oauth2"
+    """spec-025: which auth path this mcp_server connection uses -- governs
+    whether the frontend shows an OAuth "Connect" link or a "paste your
+    key" field. Always "oauth2" for a non-mcp_server connection."""
+    api_key_connected: bool = False
+    """spec-025: true once *this specific caller* has pasted their own
+    api_key/bearer credential for this connection -- the api_key/bearer
+    counterpart of oauth_connected."""
 
 
 class CreateConnectionRequest(BaseModel):
@@ -210,6 +242,14 @@ class UpdateConnectionRequest(BaseModel):
     """spec-023: name/type never change after creation, same as every
     other connection mutation in this codebase -- only config is
     editable."""
+
+
+class SetApiKeyRequest(BaseModel):
+    api_key: str
+    """spec-025: the caller's own personal API key/bearer token for an
+    auth_type != "oauth2" mcp_server connection -- stored per-caller
+    (backend/mcp/api_key_storage.py), never a single connection-wide
+    secret shared by everyone who can see the connection."""
 
 
 class PrivateConnectionSummary(BaseModel):

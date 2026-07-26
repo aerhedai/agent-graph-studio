@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import secrets
+import time
 import urllib.parse
 import urllib.request
 from contextlib import asynccontextmanager
@@ -30,7 +31,7 @@ from uuid import uuid4
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Body, Cookie, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 import backend.connections  # noqa: F401 -- import side effect registers every connection type
 import backend.integrations  # noqa: F401 -- import side effect registers every integration's webhook-sync handler
@@ -52,16 +53,19 @@ from backend.api.schemas import (
     InviteResponse,
     MeResponse,
     NodeTypeInfo,
+    OptionItem,
     PendingApprovalInfo,
     PrivateConnectionSummary,
     RefreshCapabilitiesResponse,
     ResolveApprovalRequest,
+    ResolveOptionsRequest,
     ResolveSlotsRequest,
     ResolveSlotsResponse,
     RunListResponse,
     RunStatusResponse,
     RunSubmitResponse,
     RunSummary,
+    SetApiKeyRequest,
     SetSlotMappingRequest,
     SettingsResponse,
     SlotInfo,
@@ -91,7 +95,7 @@ from backend.connections.store import (
     update_connection_config,
 )
 from backend.execution import approvals
-from backend.mcp import generated_nodes, oauth_flow, oauth_token_storage
+from backend.mcp import api_key_storage, generated_nodes, oauth_flow, oauth_token_storage, option_bindings
 from backend.registry.base import default_registry, effective_inputs, effective_outputs
 from backend.schema.models import GraphSpec, NodeSpec
 from backend.storage import graph_sharing_store, graphs_store, runs_store, settings_store, users_store
@@ -506,9 +510,59 @@ def list_node_types() -> list[NodeTypeInfo]:
                 resolve_slots_from_sub_node=definition.resolve_slots_from_sub_node,
                 integration=definition.integration,
                 capability_group=definition.capability_group,
+                dynamic_option_slots=option_bindings.fields_with_bindings(type_name),
             )
         )
     return infos
+
+
+# spec-025 Phase 5: (connection, field, args) -> (fetched_at, options) --
+# module-level like `_runs`/`approvals` elsewhere in this file; an in-memory
+# 60s cache is explicitly fine to lose on process restart, unlike anything
+# in the durable stores.
+_option_cache: dict[tuple[str, str, tuple], tuple[float, list[OptionItem]]] = {}
+
+
+@app.post("/node-types/{type_name}/options/{field_name}", response_model=list[OptionItem])
+def resolve_node_type_options(type_name: str, field_name: str, request: ResolveOptionsRequest, http_request: Request) -> list[OptionItem]:
+    """spec-025 Phase 5: live values for a dynamic-options input slot
+    (backend/mcp/option_bindings.py) -- mirrors resolve-node-slots' shape
+    (a POST body carrying the caller's in-progress config, not a GET with
+    query params, since the binding's build_args may need arbitrarily
+    structured input). Cached 60s per (connection, field, args) -- a
+    binding's source_tool is a real MCP call, no reason to repeat it on
+    every keystroke."""
+    binding = option_bindings.get_option_binding(type_name, field_name)
+    if binding is None:
+        raise HTTPException(status_code=404, detail=f"'{type_name}' has no dynamic options for field '{field_name}'")
+
+    caller = _caller_user_id(http_request)
+    profile = resolve_connection_for_user(request.connection_name, caller)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Unknown connection: {request.connection_name!r}")
+    if profile.type != "mcp_server":
+        raise HTTPException(status_code=422, detail=f"Connection '{request.connection_name}' is not an mcp_server connection")
+    config = McpServerConnectionConfig.model_validate(profile.config)
+
+    arguments = binding.build_args(request.current_config)
+    cache_key = (request.connection_name, field_name, tuple(sorted(arguments.items())))
+    cached = _option_cache.get(cache_key)
+    if cached is not None and time.monotonic() - cached[0] < 60:
+        return cached[1]
+
+    # spec-023: token_user_id mirrors _make_execute's own resolution -- the
+    # actual running caller's token for a global connection, the private
+    # owner's for a private one.
+    token_user_id = caller if profile.user_id is None else profile.user_id
+    try:
+        server_config = generated_nodes.server_config_for_execution(config, request.connection_name, token_user_id)
+        raw = generated_nodes.call_tool(server_config, binding.source_tool, arguments)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to load options: {e}") from e
+
+    options = [OptionItem(**item) for item in binding.parse(raw)]
+    _option_cache[cache_key] = (time.monotonic(), options)
+    return options
 
 
 @app.post("/node-types/{type_name}/resolve-slots", response_model=ResolveSlotsResponse)
@@ -666,11 +720,18 @@ def _connection_info(profile, caller_user_id: str | None = None, caller_role: st
     returning a ConnectionInfo agrees on who may manage what."""
     requires_oauth = False
     oauth_connected = False
+    credential_type: str | None = None
+    auth_type: str = "oauth2"
+    api_key_connected = False
     if profile.type == "mcp_server":
         config = McpServerConnectionConfig.model_validate(profile.config)
         requires_oauth = config.requires_oauth
+        credential_type = config.credential_type
+        auth_type = config.auth_type
         if requires_oauth and caller_user_id is not None:
             oauth_connected = oauth_token_storage.get_token(caller_user_id, profile.name) is not None
+        if auth_type != "oauth2" and caller_user_id is not None:
+            api_key_connected = api_key_storage.has_api_key(caller_user_id, profile.name)
     is_global = profile.user_id is None
     can_manage = profile.user_id == caller_user_id or (is_global and caller_role == "admin")
     return ConnectionInfo(
@@ -680,6 +741,9 @@ def _connection_info(profile, caller_user_id: str | None = None, caller_role: st
         oauth_connected=oauth_connected,
         is_global=is_global,
         can_manage=can_manage,
+        credential_type=credential_type,
+        auth_type=auth_type,
+        api_key_connected=api_key_connected,
     )
 
 
@@ -749,6 +813,16 @@ def create_connection(request: CreateConnectionRequest, http_request: Request) -
 
     if request.type == "mcp_server":
         config = McpServerConnectionConfig.model_validate(profile.config)
+        # spec-025: an api_key/bearer connection has exactly the same
+        # "nothing to discover with yet" problem OAuth already solves below
+        # -- no per-user key exists at creation time, so generation is
+        # deferred the same way, just without any discovery/registration
+        # step (there's nothing to discover; the admin declares auth_type
+        # explicitly). POST /connections/{name}/api-key generates for real
+        # once a user actually pastes their own key.
+        if config.auth_type != "oauth2":
+            return _connection_info(profile, caller, caller_role)
+
         # spec-021: a remote server whose OAuth requirement wasn't already
         # known (a plain re-save of an already-connected connection has
         # requires_oauth=True already and skips straight to normal
@@ -829,7 +903,9 @@ _MCP_OAUTH_STATE_COOKIE = "mcp_oauth_state"
 
 
 @app.get("/connections/oauth/start")
-def mcp_connection_oauth_start(name: str, redirect_to: str, http_request: Request) -> RedirectResponse:
+def mcp_connection_oauth_start(
+    name: str, redirect_to: str, http_request: Request, popup: bool = False
+) -> RedirectResponse:
     """spec-021: begins the per-user OAuth connect flow for an mcp_server
     connection already flagged requires_oauth=True (set at creation time,
     see create_connection above). Requires a real signed-in user -- unlike
@@ -869,7 +945,7 @@ def mcp_connection_oauth_start(name: str, redirect_to: str, http_request: Reques
     scope = config.oauth_scope or (" ".join(discovered.scopes_supported) if discovered.scopes_supported else None)
 
     code_verifier, code_challenge = oauth_flow.new_pkce_pair()
-    state = auth_jwt.issue_mcp_oauth_state_token(user_id, name, code_verifier, redirect_to)
+    state = auth_jwt.issue_mcp_oauth_state_token(user_id, name, code_verifier, redirect_to, popup=popup)
     authorization_url = oauth_flow.build_authorization_url(
         discovered.authorization_endpoint,
         client_id=config.oauth_client_id,
@@ -890,10 +966,10 @@ def mcp_connection_oauth_start(name: str, redirect_to: str, http_request: Reques
     return response
 
 
-@app.get("/connections/oauth/callback")
+@app.get("/connections/oauth/callback", response_model=None)
 def mcp_connection_oauth_callback(
     code: str, state: str, mcp_oauth_state: str | None = Cookie(default=None)
-) -> RedirectResponse:
+) -> RedirectResponse | HTMLResponse:
     """Unauthenticated (see _AUTH_EXEMPT_PATHS) -- the browser lands here
     from the OAuth provider's own redirect, carrying no JWT of ours.
     Identity (which user, which connection) comes entirely from the signed
@@ -904,7 +980,26 @@ def mcp_connection_oauth_callback(
     if claims is None:
         raise HTTPException(status_code=400, detail="OAuth state expired or invalid -- please reconnect.")
 
-    def _error_redirect(message: str) -> RedirectResponse:
+    # spec-025: popup-based OAuth UX -- when /connections/oauth/start was
+    # opened with popup=true, that's carried through the whole external
+    # round trip via the state token (nothing else survives it), so the
+    # callback renders a tiny page that messages the opener and closes
+    # itself instead of navigating this (popup) window's top level.
+    popup_target_origin = urllib.parse.urlsplit(claims.redirect_to)._replace(path="", query="", fragment="").geturl()
+
+    def _popup_response(payload: dict[str, str]) -> HTMLResponse:
+        response = HTMLResponse(
+            "<!doctype html><title>Connecting...</title><script>"
+            f"window.opener && window.opener.postMessage({json.dumps(payload)}, {json.dumps(popup_target_origin)});"
+            "window.close();"
+            "</script><p>You can close this window.</p>"
+        )
+        response.delete_cookie(_MCP_OAUTH_STATE_COOKIE)
+        return response
+
+    def _error_redirect(message: str) -> RedirectResponse | HTMLResponse:
+        if claims.popup:
+            return _popup_response({"type": "mcp_oauth_result", "error": message})
         response = RedirectResponse(
             url=f"{claims.redirect_to}#mcp_oauth_error={urllib.parse.quote(message)}", status_code=302
         )
@@ -952,12 +1047,53 @@ def mcp_connection_oauth_callback(
     except Exception as e:
         return _error_redirect(f"Connected, but tool discovery failed: {e}")
 
+    if claims.popup:
+        return _popup_response({"type": "mcp_oauth_result", "connected": claims.connection_name})
     response = RedirectResponse(
         url=f"{claims.redirect_to}#mcp_oauth_connected={urllib.parse.quote(claims.connection_name)}",
         status_code=302,
     )
     response.delete_cookie(_MCP_OAUTH_STATE_COOKIE)
     return response
+
+
+@app.post("/connections/{name}/api-key", response_model=ConnectionInfo)
+def set_connection_api_key(name: str, request: SetApiKeyRequest, http_request: Request) -> ConnectionInfo:
+    """spec-025: the api_key/bearer counterpart of the OAuth connect flow --
+    no redirect needed, the caller already has their own key in hand.
+    Any authenticated user may set *their own* key against any connection
+    they can see (their own private one, or a global one), mirroring
+    /connections/oauth/start's own "no admin gate on using a connection"
+    principle -- only mutating a connection's config is admin-gated for a
+    global one, never OAuth-connecting/setting-a-key against it."""
+    caller = _caller_user_id(http_request)
+    caller_role = _caller_role(http_request)
+    if caller is None:
+        raise HTTPException(status_code=401, detail="Sign in before connecting an app.")
+
+    profile = resolve_connection_for_user(name, caller)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"Unknown connection: {name!r}")
+    if profile.type != "mcp_server":
+        raise HTTPException(status_code=422, detail=f"Connection '{name}' is not an mcp_server connection")
+    config = McpServerConnectionConfig.model_validate(profile.config)
+    if config.auth_type == "oauth2":
+        raise HTTPException(status_code=422, detail=f"Connection '{name}' uses OAuth, not an API key.")
+
+    api_key_storage.save_api_key(caller, name, request.api_key, _utcnow_iso())
+
+    # Now that a real key exists for this caller, generate this
+    # connection's real node types -- deferred from create_connection,
+    # same shape as the OAuth callback just above.
+    try:
+        generated_nodes.generate_node_types_for_connection(
+            name, owner_user_id=profile.user_id, discovery_user_id=caller
+        )
+    except Exception as e:
+        api_key_storage.delete_api_key(caller, name)
+        raise HTTPException(status_code=502, detail=f"Saved, but tool discovery failed: {e}") from e
+
+    return _connection_info(profile, caller, caller_role)
 
 
 @app.post("/connections/{name}/test", response_model=TestConnectionResponse)
@@ -1087,6 +1223,52 @@ def promote_connection_to_global(name: str, http_request: Request) -> Connection
                 detail=f"Promoted to global, but tool discovery failed: {e} -- retry via refresh-capabilities",
             ) from e
     return _connection_info(updated, caller, caller_role)
+
+
+@app.post("/connections/{name}/catalog-bootstrap", response_model=RefreshCapabilitiesResponse)
+def bootstrap_catalog_connection(name: str, http_request: Request) -> RefreshCapabilitiesResponse:
+    """spec-025: the admin-only, explicit-intent action for a pre-populated
+    catalog entry -- registers a global mcp_server connection's real node
+    types using the admin's own already-connected credential (OAuth token
+    or api_key, per resolved open question: "admin's own connect is
+    sufficient", no separate disposable discovery-only credential needed).
+
+    Mechanically this calls the exact same generate_node_types_for_connection
+    that refresh_capabilities and the OAuth-callback/api-key-set routes
+    already call -- there is no second discovery code path. What this adds
+    is (a) an admin-only gate, unlike refresh_capabilities which any caller
+    who can resolve the connection may call, and (b) an explicit, checkable
+    precondition that the admin has personally connected first, so the
+    error is "connect your own account to this app first", not an opaque
+    502 from a live tools/list call with no credential attached at all."""
+    _require_admin(http_request)
+    caller = _caller_user_id(http_request)
+    if caller is None:
+        raise HTTPException(status_code=401, detail="Sign in before bootstrapping a catalog connection.")
+    profile = get_connection(name, user_id=None)
+    if profile is None:
+        raise HTTPException(status_code=404, detail=f"No global connection named {name!r}")
+    if profile.type != "mcp_server":
+        raise HTTPException(status_code=422, detail=f"Connection '{name}' is not an mcp_server connection")
+    config = McpServerConnectionConfig.model_validate(profile.config)
+    if config.auth_type == "oauth2" and config.requires_oauth:
+        has_credential = oauth_token_storage.get_token(caller, name) is not None
+    elif config.auth_type != "oauth2":
+        has_credential = api_key_storage.has_api_key(caller, name)
+    else:
+        has_credential = True  # doesn't require any per-user credential at all
+    if not has_credential:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Connect your own account to '{name}' first (Settings -> Connections), then bootstrap it.",
+        )
+    try:
+        generated_types = generated_nodes.generate_node_types_for_connection(
+            name, owner_user_id=profile.user_id, discovery_user_id=caller
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Bootstrap failed: {e}") from e
+    return RefreshCapabilitiesResponse(generated_types=generated_types)
 
 
 @app.get("/connections/private-summary", response_model=list[PrivateConnectionSummary])

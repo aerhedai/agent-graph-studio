@@ -36,6 +36,9 @@ export interface NodeTypeInfo {
   // hierarchy instead of the 3-level Apps -> App -> capability_group one.
   integration?: string | null;
   capability_group?: string | null;
+  // spec-025 Phase 5: which of this type's input slot names have a live-
+  // fetched dropdown available -- see backend/mcp/option_bindings.py.
+  dynamic_option_slots?: string[];
 }
 
 export interface JsonSchemaProperty {
@@ -57,6 +60,12 @@ export interface JsonSchemaProperty {
   // fields that accept any type with that capability, not one fixed type.
   connectionTypes?: string[];
   connectionCapability?: keyof ConnectionTypeInfo;
+  // spec-025: a third, orthogonal filter -- restricts to connections whose
+  // own credential_type matches, cutting across connection type entirely
+  // (e.g. two different mcp_server connections both tagged
+  // "google_gmail_oauth2"). Composes with connectionTypes/
+  // connectionCapability rather than replacing them.
+  credentialType?: string;
 }
 
 export interface JsonSchema {
@@ -64,6 +73,14 @@ export interface JsonSchema {
   required?: string[];
   title?: string;
   type?: string;
+}
+
+// spec-019/025: the shared response shape for both refresh-capabilities and
+// the newer admin-only catalog-bootstrap action -- both call the same
+// underlying discovery, so both return the same "here's what's generated
+// now" payload.
+export interface RefreshCapabilitiesResponse {
+  generated_types: string[];
 }
 
 export interface ResolveSlotsResponse {
@@ -119,6 +136,9 @@ export interface GraphNodeSpec {
   id: string;
   type: string;
   config: Record<string, unknown>;
+  // spec-025: a literal value for an input slot with no incoming edge --
+  // keyed by slot name. An edge always wins if both exist for the same slot.
+  input_values?: Record<string, unknown>;
 }
 
 export interface EdgeEndpoint {
@@ -165,6 +185,16 @@ export interface ConnectionInfo {
   // admin) -- computed server-side, never re-derived from role alone here.
   is_global: boolean;
   can_manage: boolean;
+  // spec-025: this connection's named auth requirement (e.g.
+  // "google_gmail_oauth2"), if any -- lets the picker filter to just the
+  // connections matching a node's declared credentialType.
+  credential_type?: string | null;
+  // spec-025: which auth path this mcp_server connection uses -- governs
+  // whether the picker shows an OAuth "Connect" link or a "paste your key"
+  // field. api_key_connected is the api_key/bearer counterpart of
+  // oauth_connected. Always "oauth2"/false for a non-mcp_server connection.
+  auth_type: "oauth2" | "api_key" | "bearer";
+  api_key_connected: boolean;
 }
 
 // spec-023: the admin-only "names only" view into other users' private

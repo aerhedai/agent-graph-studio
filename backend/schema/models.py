@@ -45,6 +45,14 @@ class NodeSpec(BaseModel):
     id: str
     type: str
     config: dict[str, Any] = Field(default_factory=dict)
+    input_values: dict[str, Any] = Field(default_factory=dict)
+    """spec-025: a literal value for an input slot that has no incoming
+    edge -- e.g. a generated MCP node's `channel_id` parameter, typed
+    directly rather than wired from an upstream node. Distinct from
+    `config` (node-local settings the node's own Pydantic config_model
+    defines) -- these are slot values, keyed by slot name, and only take
+    effect when that slot has no incoming data edge (an edge always wins;
+    see backend/execution/engine.py's gather_inputs)."""
 
 
 class GraphSpec(BaseModel):

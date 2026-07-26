@@ -15,11 +15,16 @@ interface NodeInspectorPanelProps {
     config: Record<string, unknown>,
     inputs: SlotInfo[],
     outputs: SlotInfo[],
+    inputValues: Record<string, unknown>,
   ) => void;
   // spec-012: (slot name, connected sub-node) pairs for the selected node,
   // so ConfigPanel can render each connected sub-node's settings read-only
   // -- editing only happens by clicking the sub-node itself on canvas.
   connectedSubNodes: { slot: string; node: GenericFlowNode }[];
+  // spec-025: names of this node's own data input slots that currently
+  // have an incoming edge -- ConfigPanel only offers a literal-value field
+  // for the ones that don't.
+  wiredInputSlotNames: Set<string>;
 }
 
 // Single side panel real estate, two purposes (spec-005 §4/§6): editing a
@@ -32,6 +37,7 @@ export function NodeInspectorPanel({
   hasRun,
   onConfigChange,
   connectedSubNodes,
+  wiredInputSlotNames,
 }: NodeInspectorPanelProps) {
   const [tab, setTab] = useState<Tab>("config");
 
@@ -71,7 +77,12 @@ export function NodeInspectorPanel({
       </div>
 
       {tab === "config" ? (
-        <ConfigPanel node={node} onConfigChange={onConfigChange} connectedSubNodes={connectedSubNodes} />
+        <ConfigPanel
+          node={node}
+          onConfigChange={onConfigChange}
+          connectedSubNodes={connectedSubNodes}
+          wiredInputSlotNames={wiredInputSlotNames}
+        />
       ) : (
         <TraceInspector traceRecord={traceRecord} isPending={hasRun && !traceRecord} />
       )}
