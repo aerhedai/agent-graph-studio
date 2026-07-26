@@ -1,0 +1,21 @@
+# SPEC-026: one TLS-terminating reverse proxy for every self-hosted MCP
+# server, each on its own port so migrating a server here never changes its
+# externally-visible URL (see docker-compose.yml's own comment for why that
+# matters for google_workspace_mcp's already-registered OAuth redirect_uri).
+#
+# Reuses the exact cert files `tailscale cert rohan-pc.taild113ad.ts.net`
+# already generated -- no new certs needed for this migration.
+
+rohan-pc.taild113ad.ts.net:8443 {
+    tls /certs/rohan-pc.taild113ad.ts.net.crt /certs/rohan-pc.taild113ad.ts.net.key
+    reverse_proxy google-workspace:8000
+}
+
+rohan-pc.taild113ad.ts.net:8444 {
+    tls /certs/rohan-pc.taild113ad.ts.net.crt /certs/rohan-pc.taild113ad.ts.net.key
+    reverse_proxy fetch:8000
+}
+
+# Add one more site block here per additional self-hosted server, each on
+# its own port (8445, 8446, ...) -- and a matching "hostport:hostport" line
+# in docker-compose.yml's caddy service. See README.md.
