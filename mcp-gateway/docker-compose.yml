@@ -1,0 +1,91 @@
+# SPEC-026: self-hosted MCP servers as containers, one Compose file instead
+# of scattered Task Scheduler entries + hand-run PowerShell scripts. Caddy
+# terminates real TLS for every service from one place (reusing the exact
+# certs `tailscale cert` already generated); each MCP server gets its own
+# host port so its externally-visible URL never changes across a migration
+# (deliberately NOT path-based routing under one port -- a path prefix
+# would change google_workspace_mcp's OAuth redirect_uri, which is already
+# registered in Google Cloud Console and would need re-registering there,
+# an external action only the admin can do; per-service ports avoid that
+# entirely).
+#
+# Deploy layout: this file expects to live at D:\mcp-servers\mcp-gateway\ on
+# the host, as a SIBLING of the existing D:\mcp-servers\google_workspace_mcp
+# checkout (build context below is a relative path into that sibling
+# directory -- its own .venv/oauth-state/certs stay exactly where they are,
+# nothing is moved or duplicated). See README.md for the full deploy
+# instructions and how to add another self-hosted server here.
+#
+# Secrets (Google OAuth client id/secret, etc.) are never in this file or in
+# git -- see .env.example for the real .env this expects, created directly
+# on the deploy host only, same convention as this repo's own top-level
+# docker-compose.yml.
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+      - "8444:8444"
+      # Add one more "host:host" line here per new service's own port
+      # (see README.md) -- Caddy is the only container that needs a
+      # published host port at all; every MCP server container is only
+      # reachable from Caddy over the internal Compose network.
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../google_workspace_mcp/certs:/certs:ro
+    depends_on:
+      - google-workspace
+      - fetch
+
+  google-workspace:
+    build:
+      context: ../google_workspace_mcp
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Unchanged from the working run.ps1 config this replaces -- see
+      # README.md for why each of these is set the way it is.
+      WORKSPACE_MCP_PORT: "8000"
+      MCP_ENABLE_OAUTH21: "true"
+      OAUTH2_ALLOW_INSECURE_TRANSPORT: "true"
+      WORKSPACE_MCP_BASE_URI: "http://localhost"
+      WORKSPACE_EXTERNAL_URL: "https://rohan-pc.taild113ad.ts.net:8443"
+      WORKSPACE_MCP_OAUTH_PROXY_STORAGE_BACKEND: "disk"
+      WORKSPACE_MCP_OAUTH_PROXY_DISK_DIRECTORY: "/app/oauth-state"
+      TOOLS: "gmail"
+    volumes:
+      # Bind-mounted straight into the existing sibling checkout, NOT a
+      # fresh named volume -- this directory already holds real state from
+      # the pre-migration deployment (registered OAuth proxy clients,
+      # refresh tokens, upstream Google tokens; confirmed non-empty during
+      # this migration). A fresh volume here would have silently discarded
+      # it and broken every already-connected user's Gmail login.
+      - ../google_workspace_mcp/oauth-state:/app/oauth-state
+      - google-workspace-creds:/app/store_creds
+
+  # SPEC-026's proof of the actual new capability: mcp-server-fetch is a
+  # stdio-only official reference MCP server (no HTTP mode of its own) --
+  # before this gateway existed, using it at all meant installing uv/uvx
+  # directly on the Agent Graph Studio backend host itself. Supergateway's
+  # `uvx`-flavored image bridges it to streamable-HTTP with zero custom
+  # Dockerfile.
+  fetch:
+    image: ghcr.io/supercorp-ai/supergateway:uvx
+    restart: unless-stopped
+    command:
+      - --stdio
+      - "uvx mcp-server-fetch"
+      - --outputTransport
+      - streamableHttp
+      - --port
+      - "8000"
+
+  # Add a new service block here per additional self-hosted server -- see
+  # README.md's "adding a new server" section for the two real shapes
+  # (already HTTP-native, or stdio-only via the Supergateway bridge image).
+
+volumes:
+  google-workspace-creds:
