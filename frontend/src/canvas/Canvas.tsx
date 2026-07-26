@@ -296,6 +296,9 @@ function CanvasInner() {
         subNodeSlots: nodeTypeInfo.sub_node_slots ?? null,
         subNodeRole: nodeTypeInfo.sub_node_role ?? null,
         resolveSlotsFromSubNode: nodeTypeInfo.resolve_slots_from_sub_node ?? null,
+        inputValues: {},
+        dynamicOptionSlots: nodeTypeInfo.dynamic_option_slots ?? [],
+        integration: nodeTypeInfo.integration ?? null,
       };
       const newNode: GenericFlowNode = { id, type: "generic", position, data };
       setNodes((nds) => [...nds, newNode]);
@@ -898,6 +901,20 @@ function CanvasInner() {
         .filter((entry): entry is { slot: string; node: GenericFlowNode } => entry.node !== undefined)
     : [];
 
+  // spec-025: which of the selected node's own data input slots currently
+  // have an incoming edge -- ConfigPanel only offers a literal-value field
+  // for the ones that don't (an edge always wins if both exist). Excludes
+  // sub_node edges (SUB_NODE_HANDLE_ID source), which also set targetHandle
+  // to a slot-shaped name but aren't ordinary data ports.
+  const wiredInputSlotNames = selectedNode
+    ? new Set(
+        edges
+          .filter((e) => e.target === selectedNode.id && e.sourceHandle !== SUB_NODE_HANDLE_ID)
+          .map((e) => e.targetHandle)
+          .filter((h): h is string => h !== null && h !== undefined),
+      )
+    : new Set<string>();
+
   return (
     <ConnectionTypeContext.Provider value={connectionTypeByName}>
       <GroupActionsContext.Provider
@@ -1210,10 +1227,11 @@ function CanvasInner() {
           traceRecord={selectedTraceRecord}
           hasRun={run !== null}
           connectedSubNodes={connectedSubNodes}
-          onConfigChange={(nodeId, config, inputs, outputs) => {
+          wiredInputSlotNames={wiredInputSlotNames}
+          onConfigChange={(nodeId, config, inputs, outputs, inputValues) => {
             setNodes((nds) =>
               nds.map((n) =>
-                n.id === nodeId ? { ...n, data: { ...n.data, config, inputs, outputs } } : n,
+                n.id === nodeId ? { ...n, data: { ...n.data, config, inputs, outputs, inputValues } } : n,
               ),
             );
             // @xyflow/react caches each node's Handle positions internally and

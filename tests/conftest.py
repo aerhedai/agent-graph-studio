@@ -104,6 +104,17 @@ def isolated_mcp_oauth_tokens_db(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_mcp_api_keys_db(tmp_path, monkeypatch):
+    """Every test gets its own empty, throwaway MCP api_key/bearer database
+    -- no test may ever read or write the real
+    ~/.agent-graph-studio/mcp_api_keys.db (spec-025). Mirrors
+    isolated_mcp_oauth_tokens_db above exactly -- same real gap that
+    fixture's own docstring describes, closed here from the start instead
+    of discovered later."""
+    monkeypatch.setenv("AGENT_GRAPH_STUDIO_MCP_API_KEYS_DB_PATH", str(tmp_path / "mcp_api_keys.db"))
+
+
+@pytest.fixture(autouse=True)
 def isolated_graph_sharing_db(tmp_path, monkeypatch):
     """Every test gets its own empty, throwaway graph-sharing database --
     no test may ever read or write the real

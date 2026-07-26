@@ -146,6 +146,14 @@ async def _run_graph_async(
         for slot in effective_inputs(definition, node) or []:
             edge = incoming_by_slot.get((node_id, slot.name))
             if edge is None:
+                # spec-025: a literal value (typed directly into the slot,
+                # no upstream wiring) satisfies the slot exactly like an
+                # edge would -- an edge always takes precedence when both
+                # exist, since this branch is only reached when no edge
+                # was found for this slot at all.
+                if slot.name in node.input_values:
+                    gathered[slot.name] = node.input_values[slot.name]
+                    continue
                 if slot.required:
                     return "blocked", None
                 continue

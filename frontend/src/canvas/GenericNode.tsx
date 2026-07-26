@@ -56,6 +56,17 @@ export type GenericNodeData = {
   // run.active_sub_node_ids) -- true only while this specific tool is
   // genuinely mid-call, not just while its parent agent is running.
   containedNodes?: { id: string; nodeType: string; category: string; active: boolean }[];
+  // spec-025: literal values for input slots with no incoming edge, keyed
+  // by slot name -- edited in the side ConfigPanel (mirrors how `config`
+  // itself is edited, not a per-card inline widget; see ConfigPanel.tsx).
+  inputValues?: Record<string, unknown>;
+  // spec-025 Phase 5: which of this type's own input slot names have a
+  // live-fetched dropdown available (NodeTypeInfo.dynamic_option_slots) --
+  // and, for a generated MCP node, which connection to fetch them against
+  // (NodeTypeInfo.integration, already the connection's own name for a
+  // dynamically-generated type -- see backend/api/schemas.py).
+  dynamicOptionSlots?: string[];
+  integration?: string | null;
 };
 
 export type GenericFlowNode = Node<GenericNodeData, "generic">;

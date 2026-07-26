@@ -121,10 +121,16 @@ class McpOAuthStateClaims:
     connection_name: str
     code_verifier: str
     redirect_to: str
+    popup: bool = False
+    """spec-025: set when /connections/oauth/start was opened with
+    popup=true -- carried through the whole external round trip via the
+    state token (the only thing that survives it), so the callback knows
+    to render a postMessage-and-close page instead of doing a top-level
+    redirect back to redirect_to."""
 
 
 def issue_mcp_oauth_state_token(
-    user_id: str, connection_name: str, code_verifier: str, redirect_to: str
+    user_id: str, connection_name: str, code_verifier: str, redirect_to: str, popup: bool = False
 ) -> str:
     """spec-021: the per-user MCP OAuth connect flow's equivalent of
     issue_state_token above -- a distinct `typ` (never accepted as a login
@@ -141,6 +147,7 @@ def issue_mcp_oauth_state_token(
         "connection_name": connection_name,
         "code_verifier": code_verifier,
         "redirect_to": redirect_to,
+        "popup": popup,
         "iat": now,
         "exp": now + timedelta(minutes=STATE_TOKEN_EXPIRES_MINUTES),
     }
@@ -160,6 +167,7 @@ def verify_mcp_oauth_state_token(token: str) -> McpOAuthStateClaims | None:
             connection_name=payload["connection_name"],
             code_verifier=payload["code_verifier"],
             redirect_to=payload["redirect_to"],
+            popup=payload.get("popup", False),
         )
     except KeyError:
         return None

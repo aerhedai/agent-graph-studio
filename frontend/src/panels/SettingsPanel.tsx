@@ -1,7 +1,9 @@
 import { ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
 import {
+  bootstrapCatalogConnection,
   clearApiKey,
+  connectMcpOAuthViaPopup,
   createConnection,
   deleteConnection,
   fetchConnectionTypes,
@@ -11,6 +13,7 @@ import {
   getSettings,
   inviteUser,
   mcpOAuthStartUrl,
+  setConnectionApiKey,
   testConnection,
   updateConnection,
   updateSettings,
@@ -66,6 +69,26 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [editDraftConfig, setEditDraftConfig] = useState<Record<string, unknown>>({});
   const [editSaving, setEditSaving] = useState(false);
   const [showPrivateSummary, setShowPrivateSummary] = useState(false);
+
+  // spec-025: per-row api-key paste state -- this list view can show several
+  // global connections at once (unlike ConnectionPicker.tsx, which only ever
+  // has one selected connection), so drafts/errors/loading are keyed by
+  // connection name rather than a single flat value.
+  const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
+  const [settingApiKeyFor, setSettingApiKeyFor] = useState<string | null>(null);
+  const [apiKeyErrors, setApiKeyErrors] = useState<Record<string, string>>({});
+
+  // spec-025: catalog-bootstrap -- explicit admin action to (re)generate a
+  // global connection's node types using the admin's own connected
+  // credential, so the catalog entry's nodes exist before any other user
+  // connects. Per-row state, same rationale as the api-key drafts above.
+  const [bootstrappingFor, setBootstrappingFor] = useState<string | null>(null);
+  const [bootstrapStatus, setBootstrapStatus] = useState<Record<string, string>>({});
+
+  // spec-025: popup-based OAuth connect, same rationale/per-row state shape
+  // as the api-key drafts above.
+  const [poppingUpFor, setPoppingUpFor] = useState<string | null>(null);
+  const [popupErrors, setPopupErrors] = useState<Record<string, string>>({});
 
   function loadConnectionsAdminData() {
     return Promise.all([fetchConnections(), fetchConnectionTypes(), fetchPrivateConnectionsSummary()]).then(
@@ -140,6 +163,52 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       setConnError(String(e));
     } finally {
       setDeletingConn(null);
+    }
+  }
+
+  async function handleSetApiKeyFor(name: string) {
+    const apiKey = (apiKeyDrafts[name] ?? "").trim();
+    if (!apiKey) return;
+    setSettingApiKeyFor(name);
+    setApiKeyErrors((errs) => ({ ...errs, [name]: "" }));
+    try {
+      await setConnectionApiKey(name, apiKey);
+      await loadConnectionsAdminData();
+      setApiKeyDrafts((drafts) => ({ ...drafts, [name]: "" }));
+    } catch (e) {
+      setApiKeyErrors((errs) => ({ ...errs, [name]: String(e) }));
+    } finally {
+      setSettingApiKeyFor(null);
+    }
+  }
+
+  async function handleConnectViaPopup(name: string) {
+    setPoppingUpFor(name);
+    setPopupErrors((errs) => ({ ...errs, [name]: "" }));
+    try {
+      const result = await connectMcpOAuthViaPopup(name);
+      if (result.error) {
+        setPopupErrors((errs) => ({ ...errs, [name]: result.error! }));
+      } else {
+        await loadConnectionsAdminData();
+      }
+    } catch (e) {
+      setPopupErrors((errs) => ({ ...errs, [name]: String(e) }));
+    } finally {
+      setPoppingUpFor(null);
+    }
+  }
+
+  async function handleBootstrapFor(name: string) {
+    setBootstrappingFor(name);
+    setBootstrapStatus((s) => ({ ...s, [name]: "" }));
+    try {
+      const res = await bootstrapCatalogConnection(name);
+      setBootstrapStatus((s) => ({ ...s, [name]: `Generated ${res.generated_types.length} node type(s).` }));
+    } catch (e) {
+      setBootstrapStatus((s) => ({ ...s, [name]: String(e) }));
+    } finally {
+      setBootstrappingFor(null);
     }
   }
 
@@ -292,19 +361,48 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                 <label>
                   {c.name} ({c.type})
                   {c.requires_oauth ? (c.oauth_connected ? " ✓ connected" : " — needs OAuth") : ""}
+                  {c.auth_type !== "oauth2" ? (c.api_key_connected ? " ✓ connected" : " — needs API key") : ""}
                 </label>
                 {c.requires_oauth && !c.oauth_connected && (
-                  // Was missing entirely -- this section had no OAuth connect
-                  // affordance at all, unlike ConnectionPicker.tsx's own
-                  // equivalent "Connect" link. Same real top-level navigation
-                  // (not a fetch), same fragment-based return Canvas.tsx
-                  // already parses.
-                  <a
-                    className="btn btn--primary"
-                    href={mcpOAuthStartUrl(c.name, window.location.origin + window.location.pathname)}
-                  >
-                    Connect
-                  </a>
+                  <div className="connection-picker__row">
+                    <button
+                      type="button"
+                      className="btn btn--primary"
+                      onClick={() => void handleConnectViaPopup(c.name)}
+                      disabled={poppingUpFor === c.name}
+                    >
+                      {poppingUpFor === c.name ? "Connecting..." : "Connect"}
+                    </button>
+                    {/* spec-025 additive fallback -- some browsers/contexts block
+                        popups, so the original real top-level navigation (same
+                        fragment-based return Canvas.tsx already parses) stays
+                        available. */}
+                    <a
+                      className="btn btn--secondary"
+                      href={mcpOAuthStartUrl(c.name, window.location.origin + window.location.pathname)}
+                    >
+                      Connect (full page)
+                    </a>
+                  </div>
+                )}
+                {popupErrors[c.name] && <div className="run-bar__error">{popupErrors[c.name]}</div>}
+                {c.auth_type !== "oauth2" && !c.api_key_connected && (
+                  <div className="config-panel__field">
+                    <input
+                      type="password"
+                      value={apiKeyDrafts[c.name] ?? ""}
+                      onChange={(e) => setApiKeyDrafts((drafts) => ({ ...drafts, [c.name]: e.target.value }))}
+                      placeholder={c.auth_type === "bearer" ? "Paste bearer token" : "Paste API key"}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void handleSetApiKeyFor(c.name)}
+                      disabled={settingApiKeyFor === c.name || !(apiKeyDrafts[c.name] ?? "").trim()}
+                    >
+                      {settingApiKeyFor === c.name ? "Connecting..." : "Connect"}
+                    </button>
+                    {apiKeyErrors[c.name] && <div className="run-bar__error">{apiKeyErrors[c.name]}</div>}
+                  </div>
                 )}
                 {editingConn === c.name ? (
                   <>
@@ -352,8 +450,19 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     >
                       {deletingConn === c.name ? "Deleting..." : "Delete"}
                     </button>
+                    {(c.oauth_connected || c.api_key_connected) && (
+                      <button
+                        type="button"
+                        className="btn btn--secondary"
+                        onClick={() => void handleBootstrapFor(c.name)}
+                        disabled={bootstrappingFor === c.name}
+                      >
+                        {bootstrappingFor === c.name ? "Bootstrapping..." : "Bootstrap catalog nodes"}
+                      </button>
+                    )}
                   </div>
                 )}
+                {bootstrapStatus[c.name] && <p className="history-panel__empty">{bootstrapStatus[c.name]}</p>}
               </div>
             ))}
 

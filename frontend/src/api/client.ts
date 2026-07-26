@@ -12,6 +12,7 @@ import type {
   MissingSlotInfo,
   NodeTypeInfo,
   PrivateConnectionSummary,
+  RefreshCapabilitiesResponse,
   ResolveSlotsResponse,
   RunListResponse,
   RunStatusResponse,
@@ -103,6 +104,24 @@ export function resolveSlots(
     method: "POST",
     body: JSON.stringify({ config }),
   });
+}
+
+// spec-025 Phase 5: live values for a dynamic-options input slot -- mirrors
+// resolveSlots' own shape (a POST body, not query params, since a binding's
+// arguments may need arbitrary structure).
+export function resolveNodeTypeOptions(
+  type: string,
+  field: string,
+  connectionName: string,
+  currentConfig: Record<string, unknown>,
+): Promise<{ label: string; value: string }[]> {
+  return request<{ label: string; value: string }[]>(
+    `/node-types/${encodeURIComponent(type)}/options/${encodeURIComponent(field)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({ connection_name: connectionName, current_config: currentConfig }),
+    },
+  );
 }
 
 // `graphId` is optional and caller-chosen (backend/api/app.py's POST /runs
@@ -232,6 +251,17 @@ export function fetchPrivateConnectionsSummary(): Promise<PrivateConnectionSumma
   return request<PrivateConnectionSummary[]>("/connections/private-summary");
 }
 
+// spec-025: admin-only -- (re)generates a global connection's real node
+// types using the admin's own already-connected credential, so the catalog
+// entry's nodes exist before any other user has connected. Same underlying
+// discovery call refresh-capabilities/the OAuth callback/api-key route
+// already use; this is the explicit, admin-gated version of it.
+export function bootstrapCatalogConnection(name: string): Promise<RefreshCapabilitiesResponse> {
+  return request<RefreshCapabilitiesResponse>(`/connections/${encodeURIComponent(name)}/catalog-bootstrap`, {
+    method: "POST",
+  });
+}
+
 // Omit type/config to re-test an already-saved connection by name; pass
 // both to test a draft configuration before it's been saved at all (the
 // picker's "Test Connection" button, pre-Save).
@@ -355,11 +385,67 @@ export function googleLoginUrl(redirectTo: string): string {
 // plain browser navigation can't carry the usual Authorization header, so
 // the session token rides along as `?key=`, the same query-param credential
 // mechanism require_auth already accepts for webhook callers.
-export function mcpOAuthStartUrl(connectionName: string, redirectTo: string): string {
+export function mcpOAuthStartUrl(connectionName: string, redirectTo: string, popup: boolean = false): string {
   const key = getApiKey();
   const params = new URLSearchParams({ name: connectionName, redirect_to: redirectTo });
+  if (popup) params.set("popup", "true");
   if (key) params.set("key", key);
   return `${API_BASE}/connections/oauth/start?${params.toString()}`;
+}
+
+// spec-025: message shape posted by the popup-mode OAuth callback page back
+// to window.opener -- either `connected` (the connection name) or `error`
+// (a human-readable message), never both.
+export interface McpOAuthPopupResult {
+  type: "mcp_oauth_result";
+  connected?: string;
+  error?: string;
+}
+
+// spec-025: opens /connections/oauth/start in a popup instead of navigating
+// the whole canvas away, and resolves once the callback page posts back its
+// result (or the popup is closed/blocked without completing). The existing
+// top-level-redirect flow (mcpOAuthStartUrl used as a plain <a href>) stays
+// supported as a fallback for browsers/contexts that block popups.
+export function connectMcpOAuthViaPopup(connectionName: string): Promise<McpOAuthPopupResult> {
+  const redirectTo = window.location.origin + window.location.pathname;
+  const url = mcpOAuthStartUrl(connectionName, redirectTo, true);
+  return new Promise((resolve, reject) => {
+    const popup = window.open(url, "mcp-oauth-connect", "width=520,height=680");
+    if (!popup) {
+      reject(new Error("Popup blocked -- allow popups for this site, or use the Connect link instead."));
+      return;
+    }
+    let settled = false;
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      const data = event.data as McpOAuthPopupResult | undefined;
+      if (!data || data.type !== "mcp_oauth_result") return;
+      settled = true;
+      window.removeEventListener("message", onMessage);
+      clearInterval(pollClosed);
+      resolve(data);
+    };
+    window.addEventListener("message", onMessage);
+    // The popup can also be closed manually by the user before completing --
+    // there's no other reliable cross-origin signal for that, so poll.
+    const pollClosed = setInterval(() => {
+      if (popup.closed && !settled) {
+        clearInterval(pollClosed);
+        window.removeEventListener("message", onMessage);
+        reject(new Error("Popup closed before connecting completed."));
+      }
+    }, 500);
+  });
+}
+
+// spec-025: the api_key/bearer counterpart of the OAuth connect flow -- no
+// redirect, the caller already has their own key in hand.
+export function setConnectionApiKey(connectionName: string, apiKey: string): Promise<ConnectionInfo> {
+  return request<ConnectionInfo>(`/connections/${encodeURIComponent(connectionName)}/api-key`, {
+    method: "POST",
+    body: JSON.stringify({ api_key: apiKey }),
+  });
 }
 
 export function getMe(): Promise<MeResponse> {

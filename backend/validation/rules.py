@@ -99,7 +99,12 @@ def check_required_inputs(
             # reports the real error; don't pile on a confusing second one.
             continue
         for slot in inputs:
-            if slot.required and (node.id, slot.name) not in covered:
+            # spec-025: a literal value in node.input_values satisfies a
+            # required slot exactly like an incoming edge -- same
+            # precedence as engine.py's gather_inputs (edge wins if both
+            # exist, but validation only needs "is this slot satisfied at
+            # all", not which source wins).
+            if slot.required and (node.id, slot.name) not in covered and slot.name not in node.input_values:
                 issues.append(
                     ValidationIssue(
                         "missing_required_input",

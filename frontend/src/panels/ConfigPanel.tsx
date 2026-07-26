@@ -1,7 +1,7 @@
 import { python } from "@codemirror/lang-python";
 import CodeMirror from "@uiw/react-codemirror";
 import { useEffect, useState } from "react";
-import { resolveSlots } from "../api/client";
+import { resolveNodeTypeOptions, resolveSlots } from "../api/client";
 import type { JsonSchemaProperty, SlotInfo } from "../api/types";
 import type { GenericFlowNode } from "../canvas/GenericNode";
 import { ConnectionPicker } from "./ConnectionPicker";
@@ -15,8 +15,13 @@ interface ConfigPanelProps {
     config: Record<string, unknown>,
     inputs: SlotInfo[],
     outputs: SlotInfo[],
+    inputValues: Record<string, unknown>,
   ) => void;
   connectedSubNodes: { slot: string; node: GenericFlowNode }[];
+  // spec-025: names of this node's own data input slots that currently
+  // have an incoming edge -- only slots NOT in this set get a literal-value
+  // field below (an edge always wins if both exist for the same slot).
+  wiredInputSlotNames: Set<string>;
 }
 
 // Auto-generated from config_schema (the same Pydantic model the backend
@@ -24,14 +29,58 @@ interface ConfigPanelProps {
 // `function_source` is the one deliberate special case (spec-005 §7): a real
 // multi-line editor instead of a generic single-line input, since that's a
 // foreseeable UX problem worth solving directly.
-export function ConfigPanel({ node, onConfigChange, connectedSubNodes }: ConfigPanelProps) {
+export function ConfigPanel({ node, onConfigChange, connectedSubNodes, wiredInputSlotNames }: ConfigPanelProps) {
   const [draft, setDraft] = useState<Record<string, unknown>>({});
+  const [inputValuesDraft, setInputValuesDraft] = useState<Record<string, unknown>>({});
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setDraft(node.data.config ?? {});
+    setInputValuesDraft(node.data.inputValues ?? {});
     setError(null);
+  }, [node.id]);
+
+  function setInputValue(slotName: string, value: unknown) {
+    setInputValuesDraft((v) => ({ ...v, [slotName]: value }));
+  }
+
+  // spec-025: only a slot with no incoming edge gets a literal-value field
+  // -- an edge always wins, so offering one here would be misleading.
+  const unwiredInputs = node.data.inputs.filter((slot) => !wiredInputSlotNames.has(slot.name));
+
+  // spec-025 Phase 5: dynamic option loading -- a slot named in
+  // dynamicOptionSlots renders as a live-fetched dropdown instead of the
+  // plain text field every other unwired input slot gets.
+  const dynamicOptionSlots = new Set(node.data.dynamicOptionSlots ?? []);
+  const [liveOptions, setLiveOptions] = useState<Record<string, { label: string; value: string }[]>>({});
+  const [loadingOptionsFor, setLoadingOptionsFor] = useState<string | null>(null);
+  const [optionsError, setOptionsError] = useState<Record<string, string>>({});
+
+  async function loadOptionsFor(slotName: string) {
+    if (!node.data.integration) return;
+    setLoadingOptionsFor(slotName);
+    setOptionsError((errs) => ({ ...errs, [slotName]: "" }));
+    try {
+      const options = await resolveNodeTypeOptions(node.data.nodeType, slotName, node.data.integration, inputValuesDraft);
+      setLiveOptions((o) => ({ ...o, [slotName]: options }));
+    } catch (e) {
+      setOptionsError((errs) => ({ ...errs, [slotName]: String(e) }));
+    } finally {
+      setLoadingOptionsFor(null);
+    }
+  }
+
+  useEffect(() => {
+    setLiveOptions({});
+    setOptionsError({});
+    for (const slotName of dynamicOptionSlots) {
+      void loadOptionsFor(slotName);
+    }
+    // Only re-fetch on a node change, not on every keystroke of a sibling
+    // field -- "Refresh options" (rendered per dynamic-options field below)
+    // covers picking up an in-progress edit to a field the binding forwards.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node.id]);
 
   const properties = node.data.configSchema.properties ?? {};
@@ -56,16 +105,16 @@ export function ConfigPanel({ node, onConfigChange, connectedSubNodes }: ConfigP
         // is nothing to re-resolve via POST /resolve-slots (config-based
         // dynamism only). Ports are kept as-is; onConnect already updates
         // them the moment the relevant sub-node edge is drawn.
-        onConfigChange(node.id, draft, node.data.inputs, node.data.outputs);
+        onConfigChange(node.id, draft, node.data.inputs, node.data.outputs, inputValuesDraft);
       } else if (node.data.dynamicSchema) {
         // Re-resolve ports for this instance's new config (SPEC-002's
         // resolve_slots, over HTTP) -- e.g. a code node's params change
         // when function_source changes. Only on save/blur, not per
         // keystroke: mcp_call's resolution spawns a real subprocess.
         const resolved = await resolveSlots(node.data.nodeType, draft);
-        onConfigChange(node.id, draft, resolved.inputs, resolved.outputs);
+        onConfigChange(node.id, draft, resolved.inputs, resolved.outputs, inputValuesDraft);
       } else {
-        onConfigChange(node.id, draft, node.data.inputs, node.data.outputs);
+        onConfigChange(node.id, draft, node.data.inputs, node.data.outputs, inputValuesDraft);
       }
     } catch (e) {
       setError(String(e));
@@ -91,6 +140,57 @@ export function ConfigPanel({ node, onConfigChange, connectedSubNodes }: ConfigP
           {renderField(name, propSchema, draft[name], setField, draft)}
         </div>
       ))}
+
+      {unwiredInputs.length > 0 && (
+        <div className="config-panel__input-values">
+          <h3 className="config-panel__input-values-heading">Input values</h3>
+          <p className="config-panel__input-values-hint">
+            No incoming edge -- type a value directly, or wire it from another node on canvas
+            (an edge always takes over from a typed value).
+          </p>
+          {unwiredInputs.map((slot) => (
+            <div key={slot.name} className="config-panel__field">
+              <label htmlFor={`input-value-${slot.name}`}>
+                {slot.name}
+                {!slot.required && <span className="config-panel__optional-tag">optional</span>}
+              </label>
+              {dynamicOptionSlots.has(slot.name) ? (
+                <>
+                  <select
+                    id={`input-value-${slot.name}`}
+                    value={typeof inputValuesDraft[slot.name] === "string" ? (inputValuesDraft[slot.name] as string) : ""}
+                    onChange={(e) => setInputValue(slot.name, e.target.value)}
+                  >
+                    <option value="">-- select --</option>
+                    {(liveOptions[slot.name] ?? []).map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    className="run-bar__secondary"
+                    onClick={() => void loadOptionsFor(slot.name)}
+                    disabled={loadingOptionsFor === slot.name}
+                  >
+                    {loadingOptionsFor === slot.name ? "Loading..." : "Refresh options"}
+                  </button>
+                  {optionsError[slot.name] && <div className="config-panel__error">{optionsError[slot.name]}</div>}
+                </>
+              ) : (
+                <input
+                  id={`input-value-${slot.name}`}
+                  type="text"
+                  value={typeof inputValuesDraft[slot.name] === "string" ? (inputValuesDraft[slot.name] as string) : ""}
+                  onChange={(e) => setInputValue(slot.name, e.target.value)}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {error && <div className="config-panel__error">{error}</div>}
       <button type="submit" className="btn btn--primary" disabled={saving}>
         {saving ? "Resolving..." : "Save"}
@@ -168,6 +268,7 @@ function renderField(
         onChange={(connectionName) => setField(name, connectionName)}
         allowedTypes={propSchema.connectionTypes}
         requiredCapability={propSchema.connectionCapability}
+        requiredCredentialType={propSchema.credentialType}
       />
     );
   }
