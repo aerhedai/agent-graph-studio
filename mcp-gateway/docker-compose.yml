@@ -28,6 +28,11 @@ services:
     ports:
       - "8443:8443"
       - "8444:8444"
+      - "8445:8445"
+      - "8446:8446"
+      - "8447:8447"
+      - "8448:8448"
+      - "8449:8449"
       # Add one more "host:host" line here per new service's own port
       # (see README.md) -- Caddy is the only container that needs a
       # published host port at all; every MCP server container is only
@@ -38,6 +43,11 @@ services:
     depends_on:
       - google-workspace
       - fetch
+      - web-search
+      - filesystem
+      - time
+      - sequential-thinking
+      - memory
 
   google-workspace:
     build:
@@ -78,6 +88,87 @@ services:
     command:
       - --stdio
       - "uvx mcp-server-fetch"
+      - --outputTransport
+      - streamableHttp
+      - --port
+      - "8000"
+
+  # spec-027: core toolkit additions, all npm-based stdio servers except
+  # `time` -- same stateless Supergateway recipe as `fetch` throughout.
+
+  # No API key at all (unlike Brave Search's official server, which was
+  # considered first -- see docs/specs/027-core-mcp-toolkit.md §4/§7 for
+  # why it was swapped out) -- duckduckgo-mcp-server exposes `search` and
+  # `fetch_content` with zero credentials, same shared-for-everyone shape
+  # as time/sequential-thinking/memory.
+  web-search:
+    image: ghcr.io/supercorp-ai/supergateway:uvx
+    restart: unless-stopped
+    command:
+      - --stdio
+      - "uvx duckduckgo-mcp-server"
+      - --outputTransport
+      - streamableHttp
+      - --port
+      - "8000"
+
+  # Bind-mounted to a real host directory (../fs-sandbox, a sibling of this
+  # checkout, created fresh for this purpose) -- isolated from anything
+  # else on the machine. Shared across the whole platform for now (the
+  # official server has no per-user identity concept at all); genuine
+  # per-user isolation is a flagged future direction, not built here.
+  filesystem:
+    image: ghcr.io/supercorp-ai/supergateway
+    restart: unless-stopped
+    volumes:
+      - ../fs-sandbox:/sandbox
+    command:
+      - --stdio
+      - "npx -y @modelcontextprotocol/server-filesystem /sandbox"
+      - --outputTransport
+      - streamableHttp
+      - --port
+      - "8000"
+
+  # No credentials, no persistent state -- pure request/response.
+  time:
+    image: ghcr.io/supercorp-ai/supergateway:uvx
+    restart: unless-stopped
+    command:
+      - --stdio
+      - "uvx mcp-server-time"
+      - --outputTransport
+      - streamableHttp
+      - --port
+      - "8000"
+
+  # No credentials, no persistent state -- pure request/response.
+  sequential-thinking:
+    image: ghcr.io/supercorp-ai/supergateway
+    restart: unless-stopped
+    command:
+      - --stdio
+      - "npx -y @modelcontextprotocol/server-sequential-thinking"
+      - --outputTransport
+      - streamableHttp
+      - --port
+      - "8000"
+
+  # MEMORY_FILE_PATH (confirmed from the package's own docs) points at a
+  # bind-mounted real host directory (../memory-data, sibling of this
+  # checkout) so the knowledge graph survives a container recreate --
+  # shared across the whole platform for now, same rationale as
+  # `filesystem` above.
+  memory:
+    image: ghcr.io/supercorp-ai/supergateway
+    restart: unless-stopped
+    environment:
+      MEMORY_FILE_PATH: /data/memory.jsonl
+    volumes:
+      - ../memory-data:/data
+    command:
+      - --stdio
+      - "npx -y @modelcontextprotocol/server-memory"
       - --outputTransport
       - streamableHttp
       - --port

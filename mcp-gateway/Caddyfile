@@ -16,6 +16,31 @@ rohan-pc.taild113ad.ts.net:8444 {
     reverse_proxy fetch:8000
 }
 
+rohan-pc.taild113ad.ts.net:8445 {
+    tls /certs/rohan-pc.taild113ad.ts.net.crt /certs/rohan-pc.taild113ad.ts.net.key
+    reverse_proxy web-search:8000
+}
+
+rohan-pc.taild113ad.ts.net:8446 {
+    tls /certs/rohan-pc.taild113ad.ts.net.crt /certs/rohan-pc.taild113ad.ts.net.key
+    reverse_proxy filesystem:8000
+}
+
+rohan-pc.taild113ad.ts.net:8447 {
+    tls /certs/rohan-pc.taild113ad.ts.net.crt /certs/rohan-pc.taild113ad.ts.net.key
+    reverse_proxy time:8000
+}
+
+rohan-pc.taild113ad.ts.net:8448 {
+    tls /certs/rohan-pc.taild113ad.ts.net.crt /certs/rohan-pc.taild113ad.ts.net.key
+    reverse_proxy sequential-thinking:8000
+}
+
+rohan-pc.taild113ad.ts.net:8449 {
+    tls /certs/rohan-pc.taild113ad.ts.net.crt /certs/rohan-pc.taild113ad.ts.net.key
+    reverse_proxy memory:8000
+}
+
 # Add one more site block here per additional self-hosted server, each on
-# its own port (8445, 8446, ...) -- and a matching "hostport:hostport" line
+# its own port (8450, 8451, ...) -- and a matching "hostport:hostport" line
 # in docker-compose.yml's caddy service. See README.md.
