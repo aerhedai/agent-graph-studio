@@ -227,6 +227,21 @@ def execute_agent(ctx: ExecutionContext) -> NodeResult:
     child_traces: list[list[TraceRecord]] = []
     total_input_tokens = 0
     total_output_tokens = 0
+    # Local models (confirmed live: devstral:24b via Ollama, the same
+    # unreliability class ollama_connection.py's own complete_with_tools
+    # docstring already documents for qwen2.5:14b, forcing temperature=0
+    # there -- that alone didn't fully fix it for every model) sometimes
+    # silently fail to populate the structured tool_calls field even with
+    # tools genuinely connected and needed, describing the action in plain
+    # text instead of actually invoking it. One nudge-and-retry below,
+    # scoped tightly to "no tool has been called yet at all this run" so
+    # it can never interfere with the model's own legitimate "I'm done,
+    # here's my final answer" once it's already used its tools -- that
+    # path (the same `if not response.tool_calls: return ...` it always
+    # was) is completely unchanged for every run where tools were used at
+    # least once, or where none were ever connected in the first place.
+    tools_ever_called = False
+    tool_call_nudge_used = False
 
     for _ in range(config.max_iterations):
         windowed = (
@@ -262,12 +277,26 @@ def execute_agent(ctx: ExecutionContext) -> NodeResult:
         total_output_tokens += response.output_tokens
 
         if not response.tool_calls:
+            if tool_definitions and not tools_ever_called and not tool_call_nudge_used:
+                tool_call_nudge_used = True
+                messages.append({"role": "assistant", "content": response.text or ""})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "You have tools available for this task -- use one of them to actually "
+                            "perform the action instead of just describing what you would do."
+                        ),
+                    }
+                )
+                continue
             return NodeResult(
                 outputs={"answer": response.text or ""},
                 child_traces=child_traces or None,
                 token_cost=TokenCost(input_tokens=total_input_tokens, output_tokens=total_output_tokens),
             )
 
+        tools_ever_called = True
         messages.append(
             {
                 "role": "assistant",

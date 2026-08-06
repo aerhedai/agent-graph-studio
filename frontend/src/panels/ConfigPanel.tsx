@@ -1,8 +1,13 @@
 import { python } from "@codemirror/lang-python";
 import CodeMirror from "@uiw/react-codemirror";
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { resolveNodeTypeOptions, resolveSlots } from "../api/client";
 import type { JsonSchemaProperty, SlotInfo } from "../api/types";
+import { displayName } from "../canvas/GenericNode";
 import type { GenericFlowNode } from "../canvas/GenericNode";
 import { ConnectionPicker } from "./ConnectionPicker";
 import { renderPrimitiveField } from "./fieldRenderers";
@@ -22,6 +27,14 @@ interface ConfigPanelProps {
   // have an incoming edge -- only slots NOT in this set get a literal-value
   // field below (an edge always wins if both exist for the same slot).
   wiredInputSlotNames: Set<string>;
+}
+
+// A config field absent from its schema's own `required` array gets the
+// same muted "optional" tag treatment as an optional data port -- one
+// visual language for "you don't have to fill this in," reused across
+// ports and form fields.
+function OptionalTag() {
+  return <span className="ml-1 text-[10px] font-normal text-muted-foreground italic">optional</span>;
 }
 
 // Auto-generated from config_schema (the same Pydantic model the backend
@@ -125,61 +138,75 @@ export function ConfigPanel({ node, onConfigChange, connectedSubNodes, wiredInpu
 
   return (
     <form
-      className="config-panel"
+      className="flex flex-col gap-3"
       onSubmit={(e) => {
         e.preventDefault();
         void handleSave();
       }}
     >
       {Object.entries(properties).map(([name, propSchema]) => (
-        <div key={name} className="config-panel__field">
-          <label htmlFor={`field-${name}`}>
+        <div key={name} className="flex flex-col gap-1">
+          <Label htmlFor={`field-${name}`}>
             {propSchema.title ?? name}
-            {!requiredFields.has(name) && <span className="config-panel__optional-tag">optional</span>}
-          </label>
+            {!requiredFields.has(name) && <OptionalTag />}
+          </Label>
           {renderField(name, propSchema, draft[name], setField, draft)}
         </div>
       ))}
 
       {unwiredInputs.length > 0 && (
-        <div className="config-panel__input-values">
-          <h3 className="config-panel__input-values-heading">Input values</h3>
-          <p className="config-panel__input-values-hint">
+        <div className="mt-2 border-t border-border pt-3">
+          <h3 className="text-xs font-semibold">Input values</h3>
+          <p className="mt-1 mb-2 text-[11px] text-muted-foreground">
             No incoming edge -- type a value directly, or wire it from another node on canvas
             (an edge always takes over from a typed value).
           </p>
           {unwiredInputs.map((slot) => (
-            <div key={slot.name} className="config-panel__field">
-              <label htmlFor={`input-value-${slot.name}`}>
+            <div key={slot.name} className="mb-3 flex flex-col gap-1">
+              <Label htmlFor={`input-value-${slot.name}`}>
                 {slot.name}
-                {!slot.required && <span className="config-panel__optional-tag">optional</span>}
-              </label>
+                {!slot.required && <OptionalTag />}
+              </Label>
               {dynamicOptionSlots.has(slot.name) ? (
                 <>
-                  <select
-                    id={`input-value-${slot.name}`}
-                    value={typeof inputValuesDraft[slot.name] === "string" ? (inputValuesDraft[slot.name] as string) : ""}
-                    onChange={(e) => setInputValue(slot.name, e.target.value)}
-                  >
-                    <option value="">-- select --</option>
-                    {(liveOptions[slot.name] ?? []).map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                  <button
+                  {(() => {
+                    const currentValue =
+                      typeof inputValuesDraft[slot.name] === "string" ? (inputValuesDraft[slot.name] as string) : "";
+                    // See ModelField.tsx's comment: Radix's SelectValue only
+                    // auto-derives display text from a SelectItem that has
+                    // actually mounted -- explicit children sidesteps that.
+                    const currentLabel = (liveOptions[slot.name] ?? []).find((o) => o.value === currentValue)?.label;
+                    return (
+                      <Select value={currentValue} onValueChange={(v) => setInputValue(slot.name, v)}>
+                        <SelectTrigger id={`input-value-${slot.name}`} className="w-full">
+                          <SelectValue placeholder="-- select --">{currentLabel}</SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(liveOptions[slot.name] ?? []).map((opt) => (
+                            <SelectItem key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    );
+                  })()}
+                  <Button
                     type="button"
-                    className="run-bar__secondary"
+                    variant="outline"
+                    size="sm"
+                    className="mt-1 self-start"
                     onClick={() => void loadOptionsFor(slot.name)}
                     disabled={loadingOptionsFor === slot.name}
                   >
                     {loadingOptionsFor === slot.name ? "Loading..." : "Refresh options"}
-                  </button>
-                  {optionsError[slot.name] && <div className="config-panel__error">{optionsError[slot.name]}</div>}
+                  </Button>
+                  {optionsError[slot.name] && (
+                    <div className="text-xs text-[var(--status-error)]">{optionsError[slot.name]}</div>
+                  )}
                 </>
               ) : (
-                <input
+                <Input
                   id={`input-value-${slot.name}`}
                   type="text"
                   value={typeof inputValuesDraft[slot.name] === "string" ? (inputValuesDraft[slot.name] as string) : ""}
@@ -191,28 +218,35 @@ export function ConfigPanel({ node, onConfigChange, connectedSubNodes, wiredInpu
         </div>
       )}
 
-      {error && <div className="config-panel__error">{error}</div>}
-      <button type="submit" className="btn btn--primary" disabled={saving}>
+      {error && <div className="text-xs text-[var(--status-error)]">{error}</div>}
+      <Button type="submit" disabled={saving}>
         {saving ? "Resolving..." : "Save"}
-      </button>
+      </Button>
 
       {connectedSubNodes.length > 0 && (
-        <div className="config-panel__sub-nodes">
-          <h3 className="config-panel__sub-nodes-heading">Connected sub-nodes</h3>
-          <p className="config-panel__sub-nodes-hint">
+        <div className="mt-2 border-t border-border pt-3">
+          <h3 className="text-xs font-semibold">Connected sub-nodes</h3>
+          <p className="mt-1 mb-2 text-[11px] text-muted-foreground">
             Read-only -- click the node on canvas to edit its settings.
           </p>
           {connectedSubNodes.map(({ slot, node: subNode }) => (
-            <div key={`${slot}-${subNode.id}`} className="config-panel__sub-node-summary">
-              <div className="config-panel__sub-node-summary-header">
-                <span className="config-panel__sub-node-slot">{slot}</span>
-                <span className="config-panel__sub-node-type">{subNode.data.nodeType}</span>
+            <div
+              key={`${slot}-${subNode.id}`}
+              className="mb-2 rounded-[var(--radius-sm)] border border-border bg-popover p-2"
+            >
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="text-[10px] font-semibold tracking-[0.03em] text-muted-foreground uppercase">
+                  {slot}
+                </span>
+                <span className="text-xs font-semibold">
+                  {displayName(subNode.data.nodeType, subNode.data.integration)}
+                </span>
               </div>
-              <dl className="config-panel__sub-node-summary-fields">
+              <dl className="flex flex-col gap-0.5">
                 {Object.entries(subNode.data.config).map(([key, value]) => (
-                  <div key={key} className="config-panel__sub-node-summary-field">
-                    <dt>{key}</dt>
-                    <dd>{typeof value === "string" ? value : JSON.stringify(value)}</dd>
+                  <div key={key} className="flex justify-between gap-2 text-[11px]">
+                    <dt className="text-muted-foreground">{key}</dt>
+                    <dd className="truncate text-right">{typeof value === "string" ? value : JSON.stringify(value)}</dd>
                   </div>
                 ))}
               </dl>

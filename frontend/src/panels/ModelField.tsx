@@ -1,5 +1,6 @@
-import { ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { fetchConnectionModels, fetchConnectionTypes, fetchConnections } from "../api/client";
 
 interface ModelFieldProps {
@@ -54,24 +55,29 @@ export function ModelField({ value, onChange, connectionName }: ModelFieldProps)
   if (models && models.length > 0) {
     const options = !stringValue || models.includes(stringValue) ? models : [stringValue, ...models];
     return (
-      <span className="select-wrap">
-        <select id="field-model" value={stringValue} onChange={(e) => onChange(e.target.value)}>
-          <option value="" disabled>
-            Select a model...
-          </option>
+      <Select value={stringValue} onValueChange={onChange}>
+        <SelectTrigger id="field-model" className="w-full">
+          {/* Radix's SelectValue only auto-derives display text from a
+              SelectItem that has actually mounted (i.e. after the dropdown
+              has been opened once) -- a value pre-populated from an
+              existing node's saved config would otherwise show the
+              placeholder instead of the real model name. Explicit children
+              sidesteps that lookup entirely. */}
+          <SelectValue placeholder="Select a model...">{stringValue || undefined}</SelectValue>
+        </SelectTrigger>
+        <SelectContent>
           {options.map((m) => (
-            <option key={m} value={m}>
+            <SelectItem key={m} value={m}>
               {m}
-            </option>
+            </SelectItem>
           ))}
-        </select>
-        <ChevronDown className="select-wrap__chevron" size={14} />
-      </span>
+        </SelectContent>
+      </Select>
     );
   }
 
   return (
-    <input
+    <Input
       id="field-model"
       type="text"
       value={stringValue}

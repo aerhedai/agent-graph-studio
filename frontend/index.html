@@ -5,6 +5,16 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Agent Graph Studio</title>
+    <script>
+      // spec-028: applied before React mounts, so there's no flash of the
+      // wrong theme on load -- mirrors ThemeProvider's own resolution logic
+      // (frontend/src/theme/ThemeProvider.tsx) exactly.
+      (function () {
+        var stored = localStorage.getItem("agent-graph-studio:theme");
+        var dark = stored === "dark" || (stored !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -1,3 +1,5 @@
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import type { JsonSchemaProperty } from "../api/types";
 import { Toggle } from "./Toggle";
 
@@ -39,7 +41,7 @@ export function renderPrimitiveField(
 
   if (propSchema.type === "integer" || propSchema.type === "number") {
     return (
-      <input
+      <Input
         id={`field-${name}`}
         type="number"
         value={typeof value === "number" ? value : ""}
@@ -52,7 +54,7 @@ export function renderPrimitiveField(
 
   if (propSchema.type === "string") {
     return (
-      <input
+      <Input
         id={`field-${name}`}
         type="text"
         value={typeof value === "string" ? value : ""}
@@ -66,9 +68,9 @@ export function renderPrimitiveField(
   const textValue =
     value === undefined ? "" : typeof value === "string" ? value : JSON.stringify(value, null, 2);
   return (
-    <textarea
+    <Textarea
       id={`field-${name}`}
-      className="config-panel__json-field"
+      className="min-h-[80px] font-mono text-xs"
       defaultValue={textValue}
       onBlur={(e) => {
         try {

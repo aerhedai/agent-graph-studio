@@ -1,8 +1,9 @@
 import { Search } from "lucide-react";
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { cn } from "@/lib/utils";
 import { fetchNodeTypes } from "../api/client";
 import type { NodeTypeInfo } from "../api/types";
-import { CATEGORY_PRESENTATION, categoryPresentation } from "./GenericNode";
+import { CATEGORY_PRESENTATION, categoryPresentation, displayName, humanizeOperation } from "./GenericNode";
 
 // The palette's ENTIRE data source is GET /node-types -- no type name, and
 // no *category*, is hardcoded anywhere in this file. Which sections exist,
@@ -19,30 +20,81 @@ function PaletteItem({ nt }: { nt: NodeTypeInfo }) {
   const { icon: ItemIcon, colorVar: itemColorVar } = categoryPresentation(nt.category);
   return (
     <li
-      className="palette__item"
+      className="flex cursor-grab items-center gap-2 rounded-[var(--radius-sm)] p-2 pl-[18px] text-[12.5px] [transition:background_120ms_var(--ease-standard),transform_150ms_var(--ease-spring)] hover:translate-x-0.5 hover:bg-popover active:cursor-grabbing"
       draggable
       onDragStart={(event) => {
         event.dataTransfer.setData("application/x-node-type", JSON.stringify(nt));
         event.dataTransfer.effectAllowed = "move";
       }}
     >
-      <span className="palette__item-icon-chip" style={{ "--node-accent": `var(${itemColorVar})` } as CSSProperties}>
+      <span
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--radius-sm)]"
+        style={
+          {
+            "--node-accent": `var(${itemColorVar})`,
+            background: "color-mix(in srgb, var(--node-accent) 18%, var(--card))",
+            color: "var(--node-accent)",
+          } as CSSProperties
+        }
+      >
         <ItemIcon size={12} />
       </span>
-      <span className="palette__item-name">{nt.type}</span>
-      {nt.dynamic_schema && <span className="palette__badge">dynamic</span>}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-foreground">{displayName(nt.type, nt.integration)}</span>
+        {nt.integration && (
+          <span className="block truncate text-[10px] text-muted-foreground">
+            {humanizeOperation(nt.type, nt.integration)}
+          </span>
+        )}
+      </span>
+      {nt.dynamic_schema && (
+        <span className="shrink-0 rounded-[var(--radius-pill)] border border-primary/45 px-1.5 py-px text-[9px] font-bold tracking-[0.03em] text-primary uppercase">
+          dynamic
+        </span>
+      )}
     </li>
   );
 }
 
-// spec-019: the "apps" category renders two distinct shapes depending on
-// where a type came from -- a manifest-backed app (e.g. Telegram) groups
-// as App -> capability_group -> types (curated, 3 levels); a dynamically
-// MCP-generated app has no curated capability_group, so it renders flatter
-// as connection -> types (2 levels). Both are driven entirely by each
-// type's own `integration`/`capability_group` fields -- no app name or
-// connection name is ever hardcoded here.
-function AppsCategoryBody({ types }: { types: NodeTypeInfo[] }) {
+// A small chevron, shared between the top-level category accordion and
+// the per-app accordion below -- same rotate-on-open treatment, so a
+// nested accordion reads as "the same interaction, one level deeper"
+// rather than a visually distinct control.
+function AccordionChevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      className={cn(
+        "shrink-0 text-muted-foreground [transition:transform_220ms_var(--ease-standard)]",
+        open && "rotate-90",
+      )}
+      width="10"
+      height="10"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="3"
+    >
+      <polyline points="9 18 15 12 9 6" />
+    </svg>
+  );
+}
+
+// spec-019, revised for discoverability at scale (a real connection can
+// expose dozens of tools -- rendering all of them permanently in the DOM
+// is exactly what makes "100s of nodes" unmanageable): the "apps" category
+// renders two distinct shapes depending on where a type came from -- a
+// manifest-backed app (e.g. Telegram) groups as App -> capability_group ->
+// types (curated, 3 levels); a dynamically MCP-generated app has no
+// curated capability_group, so it renders flatter as connection -> types
+// (2 levels). Both are driven entirely by each type's own
+// `integration`/`capability_group` fields -- no app name or connection
+// name is ever hardcoded here. Each app is now its OWN collapsed-by-
+// default accordion (Zapier's pattern: pick the app first, see its
+// specific actions only once you've committed to that app) instead of
+// every operation sitting permanently expanded in the tree.
+function AppsCategoryBody({ types, isSearching }: { types: NodeTypeInfo[]; isSearching: boolean }) {
+  const [openApps, setOpenApps] = useState<Set<string>>(new Set());
+
   const groups = useMemo(() => {
     const byIntegration = new Map<string, NodeTypeInfo[]>();
     for (const nt of types) {
@@ -65,34 +117,66 @@ function AppsCategoryBody({ types }: { types: NodeTypeInfo[] }) {
             ungrouped.push(nt);
           }
         }
-        return { integration, capabilityGroups: [...byCapabilityGroup.entries()], ungrouped };
+        return { integration, capabilityGroups: [...byCapabilityGroup.entries()], ungrouped, count: items.length };
       });
   }, [types]);
 
+  function toggleApp(integration: string) {
+    setOpenApps((prev) => {
+      const next = new Set(prev);
+      if (next.has(integration)) next.delete(integration);
+      else next.add(integration);
+      return next;
+    });
+  }
+
   return (
-    <div className="palette-apps">
-      {groups.map(({ integration, capabilityGroups, ungrouped }) => (
-        <div key={integration} className="palette-app-group">
-          <div className="palette-app-group__name">{integration}</div>
-          {capabilityGroups.map(([capabilityGroup, items]) => (
-            <div key={capabilityGroup} className="palette-capability-group">
-              <div className="palette-capability-group__name">{capabilityGroup}</div>
-              <ul className="palette__list">
-                {items.map((nt) => (
-                  <PaletteItem key={nt.type} nt={nt} />
+    <div className="flex flex-col gap-1">
+      {groups.map(({ integration, capabilityGroups, ungrouped, count }) => {
+        const isOpen = isSearching || openApps.has(integration);
+        return (
+          <div key={integration} className="flex flex-col">
+            <button
+              type="button"
+              className="flex w-full cursor-pointer items-center gap-1.5 rounded-[var(--radius-sm)] border-none bg-transparent py-1 pl-[14px] text-left font-[inherit] text-inherit select-none hover:bg-popover disabled:cursor-default"
+              onClick={() => toggleApp(integration)}
+              disabled={isSearching}
+            >
+              <AccordionChevron open={isOpen} />
+              <span className="flex-1 truncate text-[11.5px] font-semibold text-foreground">{integration}</span>
+              <span className="mr-1 shrink-0 rounded-[var(--radius-pill)] bg-popover px-[6px] py-px text-[9.5px] text-muted-foreground">
+                {count}
+              </span>
+            </button>
+            <div
+              className={cn(
+                "grid overflow-hidden [transition:grid-template-rows_220ms_var(--ease-standard)]",
+                isOpen ? "[grid-template-rows:1fr]" : "[grid-template-rows:0fr]",
+              )}
+            >
+              <div className="min-h-0 overflow-hidden">
+                {capabilityGroups.map(([capabilityGroup, items]) => (
+                  <div key={capabilityGroup} className="mt-1">
+                    <div className="mb-0.5 pl-[34px] text-[11px] text-muted-foreground">{capabilityGroup}</div>
+                    <ul className="mt-0.5 flex list-none flex-col gap-1 p-0">
+                      {items.map((nt) => (
+                        <PaletteItem key={nt.type} nt={nt} />
+                      ))}
+                    </ul>
+                  </div>
                 ))}
-              </ul>
+                {ungrouped.length > 0 && (
+                  <ul className="mt-1 flex list-none flex-col gap-1 p-0">
+                    {ungrouped.map((nt) => (
+                      <PaletteItem key={nt.type} nt={nt} />
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
-          ))}
-          {ungrouped.length > 0 && (
-            <ul className="palette__list">
-              {ungrouped.map((nt) => (
-                <PaletteItem key={nt.type} nt={nt} />
-              ))}
-            </ul>
-          )}
-        </div>
-      ))}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -143,17 +227,18 @@ export function Palette() {
   }
 
   return (
-    <aside className="palette">
-      <div className="palette__label">Node Types</div>
-      {error && <div className="palette__error">{error}</div>}
+    <aside className="flex flex-col gap-4 overflow-y-auto bg-card p-4">
+      <div className="text-[11px] font-semibold tracking-[0.08em] text-muted-foreground uppercase">Node Types</div>
+      {error && <div className="text-xs text-[var(--status-error)]">{error}</div>}
 
-      <label className="palette__search">
+      <label className="flex items-center gap-2 rounded-[var(--radius-md)] border border-border bg-background px-3 py-2 text-muted-foreground transition-colors duration-150 focus-within:border-[var(--color-border-strong)]">
         <Search size={14} />
         <input
           type="text"
           placeholder="Filter node types..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
+          className="w-full border-none bg-transparent text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground"
         />
       </label>
 
@@ -164,37 +249,34 @@ export function Palette() {
         const isOpen = isSearching || openCategories.has(category);
 
         return (
-          <div key={category} className={`palette-category${isOpen ? " palette-category--open" : ""}`}>
+          <div key={category} className="flex flex-col">
             <button
               type="button"
-              className="palette-category__header"
+              className="flex w-full cursor-pointer items-center gap-2 border-none bg-transparent py-2 text-left font-[inherit] text-inherit select-none disabled:cursor-default"
               onClick={() => toggleCategory(category)}
               disabled={isSearching}
             >
-              <svg
-                className="palette-category__chevron"
-                width="10"
-                height="10"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="3"
-              >
-                <polyline points="9 18 15 12 9 6" />
-              </svg>
-              <span
-                className="palette-category__dot"
-                style={{ background: `var(${colorVar})` }}
-              />
-              <span className="palette-category__name">{label}</span>
-              <span className="palette-category__count">{matches.length}</span>
+              <AccordionChevron open={isOpen} />
+              <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: `var(${colorVar})` }} />
+              <span className="flex-1 text-xs font-semibold tracking-[0.02em]">{label}</span>
+              <span className="rounded-[var(--radius-pill)] bg-popover px-[7px] py-px text-[10px] text-muted-foreground">
+                {matches.length}
+              </span>
             </button>
-            <div className="palette-category__body">
-              <div className="palette-category__body-inner">
+            {/* CSS-grid accordion trick: animating a fr-unit row track gives
+                a smooth auto-height transition without measuring pixel
+                heights in JS. */}
+            <div
+              className={cn(
+                "grid overflow-hidden [transition:grid-template-rows_220ms_var(--ease-standard)]",
+                isOpen ? "[grid-template-rows:1fr]" : "[grid-template-rows:0fr]",
+              )}
+            >
+              <div className="min-h-0 overflow-hidden">
                 {category === "apps" ? (
-                  <AppsCategoryBody types={matches} />
+                  <AppsCategoryBody types={matches} isSearching={isSearching} />
                 ) : (
-                  <ul className="palette__list">
+                  <ul className="mt-2 flex list-none flex-col gap-1 p-0">
                     {matches.map((nt) => (
                       <PaletteItem key={nt.type} nt={nt} />
                     ))}
