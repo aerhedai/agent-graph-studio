@@ -1,10 +1,27 @@
+@import "tailwindcss";
 @import "./styles/tokens.css";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* SPEC-028: self-hosted variable fonts (fontsource ships the actual WOFF2
+files inside the npm package, bundled by Vite -- genuinely self-hosted, zero
+runtime CDN request, unlike a Google Fonts <link>). Inter for UI text
+("Modern Dark Cinema" pairing, spec-028 §5), JetBrains Mono for code/log/
+technical surfaces only ("Terminal CLI Monospace" pairing). */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:is(.dark *));
 
 :root {
   font: 14px/145% var(--font-sans);
+  color-scheme: light;
+  color: var(--foreground);
+  background: var(--background);
+}
+
+.dark {
   color-scheme: dark;
-  color: var(--color-text);
-  background: var(--color-canvas);
 }
 
 * {
@@ -20,7 +37,7 @@ body,
 
 h1,
 h2 {
-  color: var(--color-text);
+  color: var(--foreground);
   margin: 0 0 8px;
 }
 
@@ -35,5 +52,88 @@ code {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
+  }
+}
+
+@theme inline {
+  /* spec-028: canvas keyframes, migrated from App.css's old bespoke
+     classes -- registered here (Tailwind's own recommended pattern for
+     custom keyframes, matching shadcn's own tailwind.css accordion
+     animations) so they're driven by plain `animate-*` utility classes in
+     JSX instead of arbitrary-value soup. */
+  @keyframes node-breathe {
+    0%,
+    100% {
+      transform: scale(1);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35), 0 0 0 color-mix(in srgb, var(--status-running) 0%, transparent);
+    }
+    50% {
+      transform: scale(1.015);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35), 0 0 20px color-mix(in srgb, var(--status-running) 35%, transparent);
+    }
+  }
+  @keyframes node-settle {
+    0% {
+      transform: scale(1.05);
+    }
+    100% {
+      transform: scale(1);
+    }
+  }
+  @keyframes group-row-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 color-mix(in srgb, var(--status-running) 0%, transparent);
+    }
+    50% {
+      box-shadow: 0 0 8px color-mix(in srgb, var(--status-running) 45%, transparent);
+    }
+  }
+  @keyframes edge-flow {
+    to {
+      stroke-dashoffset: -12;
+    }
+  }
+  --animate-node-breathe: node-breathe 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  --animate-node-settle: node-settle 350ms var(--ease-spring);
+  --animate-group-row-pulse: group-row-pulse 1.6s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  --animate-edge-flow: edge-flow 0.6s var(--ease-flow) infinite;
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-pill: var(--radius-pill);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  html {
+    @apply font-sans;
   }
 }

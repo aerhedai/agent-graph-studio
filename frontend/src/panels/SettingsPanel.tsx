@@ -1,5 +1,10 @@
-import { ChevronDown } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { cn } from "@/lib/utils";
 import {
   bootstrapCatalogConnection,
   clearApiKey,
@@ -23,6 +28,37 @@ import { renderPrimitiveField } from "./fieldRenderers";
 
 interface SettingsPanelProps {
   onClose: () => void;
+}
+
+function OptionalTag() {
+  return <span className="ml-1 text-[10px] font-normal text-muted-foreground italic">optional</span>;
+}
+
+function SectionHeading({ children }: { children: string }) {
+  return <h2 className="mt-4 text-sm font-semibold text-foreground">{children}</h2>;
+}
+
+function Hint({ children }: { children: ReactNode }) {
+  return <p className="text-[13px] text-muted-foreground">{children}</p>;
+}
+
+function ErrorText({ children }: { children: ReactNode }) {
+  return <div className="text-xs text-[var(--status-error)]">{children}</div>;
+}
+
+function TestResult({ result }: { result: { success: boolean; message: string } }) {
+  return (
+    <div
+      className={cn(
+        "rounded-[var(--radius-sm)] px-2 py-1.5 text-xs",
+        result.success
+          ? "bg-[color-mix(in_srgb,var(--status-success)_15%,transparent)] text-[var(--status-success)]"
+          : "bg-[color-mix(in_srgb,var(--status-error)_15%,transparent)] text-[var(--status-error)]",
+      )}
+    >
+      {result.message}
+    </div>
+  );
 }
 
 // spec-018: the one app-level setting needed to auto-register external
@@ -270,18 +306,15 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   }
 
   return (
-    <div className="history-panel-overlay" onClick={onClose}>
-      <aside className="history-panel" onClick={(e) => e.stopPropagation()}>
-        <div className="history-panel__header">
-          <h2>Settings</h2>
-          <button type="button" className="run-bar__secondary" onClick={onClose}>
-            Close
-          </button>
-        </div>
+    <Sheet open onOpenChange={(open) => !open && onClose()}>
+      <SheetContent className="w-[420px] max-w-[90vw] gap-3 overflow-y-auto p-4">
+        <SheetHeader className="p-0">
+          <SheetTitle>Settings</SheetTitle>
+        </SheetHeader>
 
-        <div className="config-panel__field">
-          <label htmlFor="public-base-url">Public base URL</label>
-          <input
+        <div className="flex flex-col gap-1">
+          <Label htmlFor="public-base-url">Public base URL</Label>
+          <Input
             id="public-base-url"
             type="text"
             value={draft}
@@ -289,43 +322,39 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             placeholder="https://your-tunnel-or-domain.example.com"
           />
         </div>
-        <p className="history-panel__empty">
+        <Hint>
           Used to auto-register external webhooks (e.g. Telegram's <code>setWebhook</code>) when
           you Activate a graph that needs one -- this is wherever this backend is actually
           reachable from the outside (a Tailscale Funnel/ngrok URL, or your real domain once
           deployed).
-        </p>
+        </Hint>
 
-        <button type="button" onClick={() => void handleSave()} disabled={saving}>
+        <Button type="button" onClick={() => void handleSave()} disabled={saving} className="self-start">
           {saving ? "Saving..." : "Save"}
-        </button>
+        </Button>
 
-        {saved && <p className="history-panel__empty">Currently set to: {saved}</p>}
-        {warning && <div className="run-bar__error">{warning}</div>}
-        {error && <div className="run-bar__error">{error}</div>}
+        {saved && <Hint>Currently set to: {saved}</Hint>}
+        {warning && <ErrorText>{warning}</ErrorText>}
+        {error && <ErrorText>{error}</ErrorText>}
 
         {me && (
           <>
-            <div className="history-panel__header">
-              <h2>Account</h2>
-            </div>
-            <p className="history-panel__empty">
+            <SectionHeading>Account</SectionHeading>
+            <Hint>
               Signed in as {me.display_name} ({me.email}) -- {me.role}
-            </p>
-            <button type="button" className="run-bar__secondary" onClick={handleSignOut}>
+            </Hint>
+            <Button type="button" variant="outline" onClick={handleSignOut} className="self-start">
               Sign out
-            </button>
+            </Button>
           </>
         )}
 
         {me?.role === "admin" && (
           <>
-            <div className="history-panel__header">
-              <h2>Invite a user</h2>
-            </div>
-            <div className="config-panel__field">
-              <label htmlFor="invite-email">Email</label>
-              <input
+            <SectionHeading>Invite a user</SectionHeading>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="invite-email">Email</Label>
+              <Input
                 id="invite-email"
                 type="email"
                 value={inviteEmail}
@@ -333,148 +362,137 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                 placeholder="teammate@example.com"
               />
             </div>
-            <button type="button" onClick={() => void handleInvite()} disabled={inviting}>
+            <Button type="button" onClick={() => void handleInvite()} disabled={inviting} className="self-start">
               {inviting ? "Inviting..." : "Invite"}
-            </button>
-            {inviteStatus && <p className="history-panel__empty">{inviteStatus}</p>}
-            {inviteError && <div className="run-bar__error">{inviteError}</div>}
+            </Button>
+            {inviteStatus && <Hint>{inviteStatus}</Hint>}
+            {inviteError && <ErrorText>{inviteError}</ErrorText>}
           </>
         )}
 
         {me?.role === "admin" && (
           <>
-            <div className="history-panel__header">
-              <h2>Connections</h2>
-            </div>
-            <p className="history-panel__empty">
+            <SectionHeading>Connections</SectionHeading>
+            <Hint>
               Global connections are visible to every user (e.g. a shared Gmail/Discord app they can each
               connect their own account to) and are only manageable here, by an admin. A user's own private
               connections stay self-service, unaffected -- this section never shows their config or secrets.
-            </p>
-            {connError && <div className="run-bar__error">{connError}</div>}
+            </Hint>
+            {connError && <ErrorText>{connError}</ErrorText>}
 
-            {globalConnections.length === 0 && !showConnForm && (
-              <p className="history-panel__empty">No global connections yet.</p>
-            )}
+            {globalConnections.length === 0 && !showConnForm && <Hint>No global connections yet.</Hint>}
             {globalConnections.map((c) => (
-              <div key={c.name} className="config-panel__field">
-                <label>
+              <div key={c.name} className="flex flex-col gap-2 rounded-[var(--radius-sm)] border border-border p-2">
+                <Label>
                   {c.name} ({c.type})
                   {c.requires_oauth ? (c.oauth_connected ? " ✓ connected" : " — needs OAuth") : ""}
                   {c.auth_type !== "oauth2" ? (c.api_key_connected ? " ✓ connected" : " — needs API key") : ""}
-                </label>
+                </Label>
                 {c.requires_oauth && !c.oauth_connected && (
-                  <div className="connection-picker__row">
-                    <button
+                  <div className="flex gap-1.5">
+                    <Button
                       type="button"
-                      className="btn btn--primary"
                       onClick={() => void handleConnectViaPopup(c.name)}
                       disabled={poppingUpFor === c.name}
                     >
                       {poppingUpFor === c.name ? "Connecting..." : "Connect"}
-                    </button>
+                    </Button>
                     {/* spec-025 additive fallback -- some browsers/contexts block
                         popups, so the original real top-level navigation (same
                         fragment-based return Canvas.tsx already parses) stays
                         available. */}
-                    <a
-                      className="btn btn--secondary"
-                      href={mcpOAuthStartUrl(c.name, window.location.origin + window.location.pathname)}
-                    >
-                      Connect (full page)
-                    </a>
+                    <Button type="button" variant="outline" asChild>
+                      <a href={mcpOAuthStartUrl(c.name, window.location.origin + window.location.pathname)}>
+                        Connect (full page)
+                      </a>
+                    </Button>
                   </div>
                 )}
-                {popupErrors[c.name] && <div className="run-bar__error">{popupErrors[c.name]}</div>}
+                {popupErrors[c.name] && <ErrorText>{popupErrors[c.name]}</ErrorText>}
                 {c.auth_type !== "oauth2" && !c.api_key_connected && (
-                  <div className="config-panel__field">
-                    <input
+                  <div className="flex flex-col gap-1">
+                    <Input
                       type="password"
                       value={apiKeyDrafts[c.name] ?? ""}
                       onChange={(e) => setApiKeyDrafts((drafts) => ({ ...drafts, [c.name]: e.target.value }))}
                       placeholder={c.auth_type === "bearer" ? "Paste bearer token" : "Paste API key"}
                     />
-                    <button
+                    <Button
                       type="button"
                       onClick={() => void handleSetApiKeyFor(c.name)}
                       disabled={settingApiKeyFor === c.name || !(apiKeyDrafts[c.name] ?? "").trim()}
+                      className="self-start"
                     >
                       {settingApiKeyFor === c.name ? "Connecting..." : "Connect"}
-                    </button>
-                    {apiKeyErrors[c.name] && <div className="run-bar__error">{apiKeyErrors[c.name]}</div>}
+                    </Button>
+                    {apiKeyErrors[c.name] && <ErrorText>{apiKeyErrors[c.name]}</ErrorText>}
                   </div>
                 )}
                 {editingConn === c.name ? (
                   <>
-                    <p className="history-panel__empty">
-                      Config isn't shown back for security -- re-enter every field to save changes.
-                    </p>
+                    <Hint>Config isn't shown back for security -- re-enter every field to save changes.</Hint>
                     {(() => {
                       const typeInfo = connectionTypes.find((t) => t.type === c.type);
                       const requiredFields = new Set(typeInfo?.config_schema.required ?? []);
                       return Object.entries(typeInfo?.config_schema.properties ?? {}).map(([name, propSchema]) => (
-                        <div key={name} className="config-panel__field">
-                          <label htmlFor={`edit-${c.name}-${name}`}>
+                        <div key={name} className="flex flex-col gap-1">
+                          <Label htmlFor={`edit-${c.name}-${name}`}>
                             {propSchema.title ?? name}
-                            {!requiredFields.has(name) && (
-                              <span className="config-panel__optional-tag">optional</span>
-                            )}
-                          </label>
+                            {!requiredFields.has(name) && <OptionalTag />}
+                          </Label>
                           {renderPrimitiveField(name, propSchema, editDraftConfig[name], (n, v) =>
                             setEditDraftConfig((cfg) => ({ ...cfg, [n]: v })),
                           )}
                         </div>
                       ));
                     })()}
-                    <button
-                      type="button"
-                      onClick={() => void handleSaveEditedConnection(c.name)}
-                      disabled={editSaving}
-                    >
-                      {editSaving ? "Saving..." : "Save"}
-                    </button>
-                    <button type="button" className="run-bar__secondary" onClick={() => setEditingConn(null)}>
-                      Cancel
-                    </button>
+                    <div className="flex gap-2">
+                      <Button type="button" onClick={() => void handleSaveEditedConnection(c.name)} disabled={editSaving}>
+                        {editSaving ? "Saving..." : "Save"}
+                      </Button>
+                      <Button type="button" variant="outline" onClick={() => setEditingConn(null)}>
+                        Cancel
+                      </Button>
+                    </div>
                   </>
                 ) : (
-                  <div className="connection-picker__row">
-                    <button type="button" className="btn btn--secondary" onClick={() => startEditingConnection(c)}>
+                  <div className="flex gap-1.5">
+                    <Button type="button" variant="outline" onClick={() => startEditingConnection(c)}>
                       Edit
-                    </button>
-                    <button
+                    </Button>
+                    <Button
                       type="button"
-                      className="btn btn--secondary"
+                      variant="outline"
                       onClick={() => void handleDeleteGlobalConnection(c.name)}
                       disabled={deletingConn === c.name}
                     >
                       {deletingConn === c.name ? "Deleting..." : "Delete"}
-                    </button>
+                    </Button>
                     {(c.oauth_connected || c.api_key_connected) && (
-                      <button
+                      <Button
                         type="button"
-                        className="btn btn--secondary"
+                        variant="outline"
                         onClick={() => void handleBootstrapFor(c.name)}
                         disabled={bootstrappingFor === c.name}
                       >
                         {bootstrappingFor === c.name ? "Bootstrapping..." : "Bootstrap catalog nodes"}
-                      </button>
+                      </Button>
                     )}
                   </div>
                 )}
-                {bootstrapStatus[c.name] && <p className="history-panel__empty">{bootstrapStatus[c.name]}</p>}
+                {bootstrapStatus[c.name] && <Hint>{bootstrapStatus[c.name]}</Hint>}
               </div>
             ))}
 
-            <button type="button" className="run-bar__secondary" onClick={() => setShowConnForm((s) => !s)}>
+            <Button type="button" variant="outline" onClick={() => setShowConnForm((s) => !s)} className="self-start">
               {showConnForm ? "Cancel" : "+ New global connection"}
-            </button>
+            </Button>
 
             {showConnForm && (
-              <div className="connection-picker__form">
-                <div className="config-panel__field">
-                  <label htmlFor="new-global-conn-name">Connection name</label>
-                  <input
+              <div className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-border bg-background p-2.5">
+                <div className="flex flex-col gap-1">
+                  <Label htmlFor="new-global-conn-name">Connection name</Label>
+                  <Input
                     id="new-global-conn-name"
                     type="text"
                     value={connDraftName}
@@ -482,29 +500,27 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     placeholder="e.g. shared-gmail"
                   />
                 </div>
-                <div className="config-panel__field">
-                  <label htmlFor="new-global-conn-type">Type</label>
-                  <span className="select-wrap">
-                    <select
-                      id="new-global-conn-type"
-                      value={connDraftType ?? ""}
-                      onChange={(e) => {
-                        setConnDraftType(e.target.value || null);
-                        setConnDraftConfig({});
-                        setConnTestResult(null);
-                      }}
-                    >
-                      <option value="" disabled>
-                        Select type...
-                      </option>
+                <div className="flex flex-col gap-1">
+                  <Label htmlFor="new-global-conn-type">Type</Label>
+                  <Select
+                    value={connDraftType ?? ""}
+                    onValueChange={(v) => {
+                      setConnDraftType(v || null);
+                      setConnDraftConfig({});
+                      setConnTestResult(null);
+                    }}
+                  >
+                    <SelectTrigger id="new-global-conn-type" className="w-full">
+                      <SelectValue placeholder="Select type..." />
+                    </SelectTrigger>
+                    <SelectContent>
                       {connectionTypes.map((t) => (
-                        <option key={t.type} value={t.type}>
+                        <SelectItem key={t.type} value={t.type}>
                           {t.type}
-                        </option>
+                        </SelectItem>
                       ))}
-                    </select>
-                    <ChevronDown className="select-wrap__chevron" size={14} />
-                  </span>
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 {connDraftTypeInfo &&
@@ -512,13 +528,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     const requiredFields = new Set(connDraftTypeInfo.config_schema.required ?? []);
                     return Object.entries(connDraftTypeInfo.config_schema.properties ?? {}).map(
                       ([name, propSchema]) => (
-                        <div key={name} className="config-panel__field">
-                          <label htmlFor={`new-global-conn-${name}`}>
+                        <div key={name} className="flex flex-col gap-1">
+                          <Label htmlFor={`new-global-conn-${name}`}>
                             {propSchema.title ?? name}
-                            {!requiredFields.has(name) && (
-                              <span className="config-panel__optional-tag">optional</span>
-                            )}
-                          </label>
+                            {!requiredFields.has(name) && <OptionalTag />}
+                          </Label>
                           {renderPrimitiveField(name, propSchema, connDraftConfig[name], (n, v) =>
                             setConnDraftConfig((cfg) => ({ ...cfg, [n]: v })),
                           )}
@@ -527,39 +541,33 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     );
                   })()}
 
-                {connTestResult && (
-                  <div
-                    className={`connection-picker__test-result ${connTestResult.success ? "success" : "failure"}`}
-                  >
-                    {connTestResult.message}
-                  </div>
-                )}
-                {connFormError && <div className="config-panel__error">{connFormError}</div>}
+                {connTestResult && <TestResult result={connTestResult} />}
+                {connFormError && <ErrorText>{connFormError}</ErrorText>}
 
-                <div className="connection-picker__form-actions">
-                  <button
+                <div className="flex gap-2">
+                  <Button
                     type="button"
-                    className="btn btn--secondary"
+                    variant="outline"
                     onClick={() => void handleTestNewConnection()}
                     disabled={connTesting || !connDraftType}
                   >
                     {connTesting ? "Testing..." : "Test Connection"}
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="button"
-                    className="btn btn--primary"
                     onClick={() => void handleSaveNewGlobalConnection()}
                     disabled={connSaving || !connTestResult?.success || !connDraftName}
                   >
                     {connSaving ? "Saving..." : "Save"}
-                  </button>
+                  </Button>
                 </div>
               </div>
             )}
 
-            <button
+            <Button
               type="button"
-              className="run-bar__secondary"
+              variant="outline"
+              className="self-start"
               onClick={() => {
                 setShowPrivateSummary((s) => !s);
                 if (!showPrivateSummary && privateSummary.length === 0) {
@@ -570,15 +578,15 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
               }}
             >
               {showPrivateSummary ? "Hide" : "Show"} other users' private connections
-            </button>
+            </Button>
             {showPrivateSummary && (
               <>
                 {privateSummary.length === 0 ? (
-                  <p className="history-panel__empty">No private connections exist yet.</p>
+                  <Hint>No private connections exist yet.</Hint>
                 ) : (
-                  <ul>
+                  <ul className="flex flex-col gap-1">
                     {privateSummary.map((p) => (
-                      <li key={`${p.user_id}-${p.name}`} className="history-panel__empty">
+                      <li key={`${p.user_id}-${p.name}`} className="text-[13px] text-muted-foreground">
                         {p.user_id}: {p.name} ({p.type})
                       </li>
                     ))}
@@ -588,7 +596,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
             )}
           </>
         )}
-      </aside>
-    </div>
+      </SheetContent>
+    </Sheet>
   );
 }

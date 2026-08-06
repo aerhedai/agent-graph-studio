@@ -14,7 +14,20 @@ import {
   type IsValidConnection,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { Download, History as HistoryIcon, MoreHorizontal, Play, Settings as SettingsIcon, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
+import { cn } from "@/lib/utils";
 import {
   activateGraph,
   createGraph,
@@ -58,6 +71,7 @@ import {
   type GenericNodeData,
 } from "./GenericNode";
 import { Palette } from "./Palette";
+import { QuickAddSearch } from "./QuickAddSearch";
 import { StatusEdge } from "./StatusEdge";
 import { errorMessageForNode, findTraceRecord, statusForNode } from "./traceStatus";
 import { slotTypesCompatible } from "./typeCompat";
@@ -130,6 +144,14 @@ function CanvasInner() {
   // handleResolveApproval, not persisted anywhere itself.
   const [rememberApproval, setRememberApproval] = useState<Record<string, boolean>>({});
   const [nodeTypesByName, setNodeTypesByName] = useState<Record<string, NodeTypeInfo>>({});
+  // spec follow-up ("100s of nodes" discoverability): the ComfyUI-style
+  // canvas-native quick-add -- screen-space anchor for the popover's own
+  // position, flow-space position for where the chosen node actually gets
+  // created (both captured at the same double-click, see
+  // handlePaneClickForQuickAdd below). Null anchor means closed.
+  const [quickAddAnchor, setQuickAddAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [quickAddFlowPosition, setQuickAddFlowPosition] = useState<{ x: number; y: number } | null>(null);
+  const lastPaneClickRef = useRef<{ time: number; x: number; y: number } | null>(null);
   const [connectionTypeByName, setConnectionTypeByName] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   // spec-017/020: gate the whole canvas behind a sign-in prompt until a
@@ -276,13 +298,13 @@ function CanvasInner() {
       });
   }, [needsUnlock]);
 
-  const onDrop = useCallback(
-    (event: React.DragEvent) => {
-      event.preventDefault();
-      const raw = event.dataTransfer.getData("application/x-node-type");
-      if (!raw) return;
-      const nodeTypeInfo = JSON.parse(raw) as NodeTypeInfo;
-      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+  // Shared by both drop-from-palette (onDrop below) and the quick-add
+  // search (QuickAddSearch.tsx, spec follow-up to the "100s of nodes"
+  // discoverability request) -- the only difference between the two entry
+  // points is how `position` was computed, everything about actually
+  // creating and drop-to-containing the node is identical.
+  const addNodeAtPosition = useCallback(
+    (nodeTypeInfo: NodeTypeInfo, position: { x: number; y: number }) => {
       const id = nextNodeId(nodeTypeInfo.type);
       const data: GenericNodeData = {
         nodeType: nodeTypeInfo.type,
@@ -332,13 +354,56 @@ function CanvasInner() {
         }
       }
     },
-    [screenToFlowPosition, setNodes, setEdges, nodes],
+    [setNodes, setEdges, nodes],
+  );
+
+  const onDrop = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault();
+      const raw = event.dataTransfer.getData("application/x-node-type");
+      if (!raw) return;
+      const nodeTypeInfo = JSON.parse(raw) as NodeTypeInfo;
+      const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      addNodeAtPosition(nodeTypeInfo, position);
+    },
+    [screenToFlowPosition, addNodeAtPosition],
   );
 
   const onDragOver = useCallback((event: React.DragEvent) => {
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
   }, []);
+
+  // ComfyUI-style canvas-native quick-add: double-click empty canvas opens
+  // a floating fuzzy search right at the cursor (QuickAddSearch.tsx).
+  // React Flow has no onPaneDoubleClick of its own, so double-click is
+  // detected manually here -- two onPaneClick firings within 350ms at
+  // essentially the same screen position. Deliberately reuses onPaneClick
+  // rather than a separate native onDoubleClick listener on the wrapper
+  // div, since onPaneClick already only fires for genuine empty-canvas
+  // clicks (never node/edge clicks), which is exactly the "empty canvas"
+  // gate this needs.
+  const DOUBLE_CLICK_MS = 350;
+  const DOUBLE_CLICK_SLOP_PX = 6;
+  const handlePaneClick = useCallback(
+    (event: React.MouseEvent) => {
+      setSelectedNodeId(null);
+      const now = Date.now();
+      const prev = lastPaneClickRef.current;
+      lastPaneClickRef.current = { time: now, x: event.clientX, y: event.clientY };
+      if (
+        prev &&
+        now - prev.time < DOUBLE_CLICK_MS &&
+        Math.abs(event.clientX - prev.x) < DOUBLE_CLICK_SLOP_PX &&
+        Math.abs(event.clientY - prev.y) < DOUBLE_CLICK_SLOP_PX
+      ) {
+        lastPaneClickRef.current = null;
+        setQuickAddFlowPosition(screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+        setQuickAddAnchor({ x: event.clientX, y: event.clientY });
+      }
+    },
+    [screenToFlowPosition],
+  );
 
   // Client-side typed edge validation (spec-005 §3): reject an incompatible
   // connection at connection time, in the UI itself, mirroring the backend's
@@ -502,7 +567,10 @@ function CanvasInner() {
   // applied to a root/sub-node card.
   const groupContents = useMemo(() => {
     const activeIds = new Set(run?.active_sub_node_ids ?? []);
-    const map: Record<string, { id: string; nodeType: string; category: string; active: boolean }[]> = {};
+    const map: Record<
+      string,
+      { id: string; nodeType: string; category: string; active: boolean; integration?: string | null }[]
+    > = {};
     for (const [childId, groupId] of Object.entries(containedBy)) {
       const child = nodes.find((n) => n.id === childId);
       if (!child) continue;
@@ -511,6 +579,7 @@ function CanvasInner() {
         nodeType: child.data.nodeType,
         category: child.data.category,
         active: activeIds.has(child.id),
+        integration: child.data.integration,
       });
     }
     return map;
@@ -872,16 +941,14 @@ function CanvasInner() {
   // redirect rather than typing in the shared key directly.
   if (needsUnlock) {
     return (
-      <div className="unlock-overlay">
-        <div className="unlock-overlay__form">
-          <h1>Agent Graph Studio</h1>
-          <p className="history-panel__empty">
-            Sign in with an invited Google account to continue.
-          </p>
-          <button type="button" onClick={handleGoogleSignIn}>
+      <div className="flex h-screen items-center justify-center bg-background">
+        <div className="flex w-[280px] flex-col gap-2.5 rounded-[var(--radius-sm)] border border-border bg-card p-6">
+          <h1 className="text-lg font-semibold">Agent Graph Studio</h1>
+          <p className="text-xs text-muted-foreground">Sign in with an invited Google account to continue.</p>
+          <Button type="button" onClick={handleGoogleSignIn}>
             Sign in with Google
-          </button>
-          {unlockError && <div className="unlock-overlay__error">{unlockError}</div>}
+          </Button>
+          {unlockError && <div className="text-xs text-[var(--status-error)]">{unlockError}</div>}
         </div>
       </div>
     );
@@ -923,64 +990,179 @@ function CanvasInner() {
       <div className="app-layout">
         <Palette />
         <div className="canvas-column">
-          <div className="run-bar">
-            <button type="button" onClick={() => void handleRun()} disabled={isSubmitting || run?.status === "running"}>
+          <div className="flex flex-wrap items-center gap-2 border-b border-border bg-card/60 px-3 py-2 shadow-[var(--shadow-sm)]">
+            {/* Run cluster -- the one action that gets real visual weight;
+                everything else in this toolbar is deliberately quieter. */}
+            <Button
+              type="button"
+              className="gap-1.5 font-semibold"
+              onClick={() => void handleRun()}
+              disabled={isSubmitting || run?.status === "running"}
+            >
+              <Play className="size-3.5 fill-current" />
               {run?.status === "running" ? "Running..." : "Run"}
-            </button>
-            <input
+            </Button>
+            {run && (
+              <Badge
+                variant="outline"
+                className={cn(
+                  "border-none text-xs font-semibold tracking-[0.03em] uppercase",
+                  run.status === "running" &&
+                    "text-[var(--status-running)] bg-[color-mix(in_srgb,var(--status-running)_15%,transparent)]",
+                  run.status === "completed" &&
+                    "text-[var(--status-success)] bg-[color-mix(in_srgb,var(--status-success)_15%,transparent)]",
+                  run.status === "failed" &&
+                    "text-[var(--status-error)] bg-[color-mix(in_srgb,var(--status-error)_15%,transparent)]",
+                )}
+              >
+                {run.status}
+              </Badge>
+            )}
+
+            <Separator orientation="vertical" className="h-5" />
+
+            {/* Graph identity cluster */}
+            <Input
               type="text"
-              className="run-bar__graph-name"
+              className="h-8 w-[140px]"
               value={graphName}
               onChange={(e) => setGraphName(e.target.value)}
               placeholder="Graph name"
               title="This graph's name -- used when Saved to the server"
             />
-            <button
+            <Button
               type="button"
-              className="run-bar__secondary"
+              variant="ghost"
               onClick={() => void handleSave().then(() => refreshSavedGraphsList())}
               disabled={saving}
             >
               {saving ? "Saving..." : "Save"}
-            </button>
-            <button
+            </Button>
+            <Select
+              value=""
+              onValueChange={(v) => {
+                if (v) void handleLoadFromServer(v);
+              }}
+              onOpenChange={(open) => open && void refreshSavedGraphsList()}
+            >
+              <SelectTrigger className="w-[170px]">
+                <SelectValue placeholder="Load saved graph..." />
+              </SelectTrigger>
+              <SelectContent>
+                {savedGraphs.map((g) => (
+                  <SelectItem key={g.graph_id} value={g.graph_id}>
+                    {g.name}
+                    {g.is_active ? " (active)" : ""}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Separator orientation="vertical" className="h-5" />
+
+            {/* Sharing + activation cluster */}
+            <Button
               type="button"
-              className="run-bar__secondary"
+              variant={sharing === "shared" ? "secondary" : "ghost"}
               onClick={() => setShowSharingPanel((v) => !v)}
               title="Let other users run this graph with their own connections"
             >
               {sharing === "shared" ? "Shared" : "Private"}
-            </button>
-            <span className="select-wrap">
-              <select
-                value=""
-                onFocus={() => void refreshSavedGraphsList()}
-                onChange={(e) => {
-                  if (e.target.value) void handleLoadFromServer(e.target.value);
-                  e.target.value = "";
-                }}
-              >
-                <option value="" disabled>
-                  Load saved graph...
-                </option>
-                {savedGraphs.map((g) => (
-                  <option key={g.graph_id} value={g.graph_id}>
-                    {g.name}
-                    {g.is_active ? " (active)" : ""}
-                  </option>
-                ))}
-              </select>
-            </span>
-            <button type="button" onClick={handleExport} className="run-bar__secondary">
-              Export
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className="run-bar__secondary"
-              onClick={() => fileInputRef.current?.click()}
+              variant={activation === "active" ? "secondary" : "outline"}
+              className={cn(
+                activation === "active" && "text-[var(--status-running)]",
+              )}
+              onClick={() => void (activation === "active" ? handleDeactivate() : handleActivate())}
+              disabled={activation === "activating" || activation === "deactivating"}
             >
-              Import
-            </button>
+              {activation === "activating"
+                ? "Activating..."
+                : activation === "deactivating"
+                  ? "Deactivating..."
+                  : activation === "active"
+                    ? "Deactivate"
+                    : "Activate"}
+            </Button>
+            {activation === "active" && (
+              // Re-push the current canvas graph without a deactivate round-
+              // trip -- POST /graphs/{id}/activate is already idempotent
+              // server-side (replaces the prior registration outright), so
+              // this reuses handleActivate completely unchanged. Without
+              // this, an edit made after activating (e.g. removing an edge)
+              // silently has no effect until Deactivate+Activate, which is
+              // exactly the confusion that surfaced this gap.
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => void handleActivate()}
+                title="Push the current canvas graph to the already-active webhook/schedule"
+              >
+                Update
+              </Button>
+            )}
+            {activation === "active" && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold tracking-[0.03em] text-[var(--status-running)] uppercase animate-group-row-pulse">
+                ● active
+              </span>
+            )}
+            {activation === "active" && triggers && triggers.length > 0 && (
+              <span className="flex flex-wrap gap-1.5">
+                {triggers.map((t) => (
+                  <code
+                    key={t.node_id}
+                    className="rounded-[var(--radius-sm)] border border-[color-mix(in_srgb,var(--status-running)_30%,transparent)] bg-[color-mix(in_srgb,var(--status-running)_12%,var(--card))] px-1.5 py-0.5 text-[11px] text-muted-foreground"
+                  >
+                    {t.type === "webhook_trigger" ? `POST ${t.endpoint_or_schedule}` : `cron ${t.endpoint_or_schedule}`}
+                  </code>
+                ))}
+              </span>
+            )}
+
+            {mcpOAuthMessage && (
+              <span
+                className="cursor-pointer text-xs text-[var(--status-error)]"
+                onClick={() => setMcpOAuthMessage(null)}
+                title="Dismiss"
+              >
+                {mcpOAuthMessage}
+              </span>
+            )}
+            {runError && <span className="text-xs text-[var(--status-error)]">{runError}</span>}
+            {loadError && <span className="text-xs text-[var(--status-error)]">{loadError}</span>}
+            {saveError && <span className="text-xs text-[var(--status-error)]">{saveError}</span>}
+            {activationError && <span className="text-xs text-[var(--status-error)]">{activationError}</span>}
+
+            {/* Utility cluster -- rarely-touched actions tucked into one
+                overflow menu instead of competing for row space with the
+                controls actually used every session. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button type="button" variant="ghost" size="icon" className="ml-auto" title="More actions">
+                  <MoreHorizontal className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={handleExport}>
+                  <Download className="size-4" />
+                  Export
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => fileInputRef.current?.click()}>
+                  <Upload className="size-4" />
+                  Import
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setShowHistory(true)}>
+                  <HistoryIcon className="size-4" />
+                  History
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setShowSettings(true)}>
+                  <SettingsIcon className="size-4" />
+                  Settings
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <input
               ref={fileInputRef}
               type="file"
@@ -992,69 +1174,6 @@ function CanvasInner() {
                 e.target.value = "";
               }}
             />
-            <button
-              type="button"
-              className={`run-bar__secondary run-bar__activate-btn${
-                activation === "active" ? " run-bar__activate-btn--active" : ""
-              }`}
-              onClick={() => void (activation === "active" ? handleDeactivate() : handleActivate())}
-              disabled={activation === "activating" || activation === "deactivating"}
-            >
-              {activation === "activating"
-                ? "Activating..."
-                : activation === "deactivating"
-                  ? "Deactivating..."
-                  : activation === "active"
-                    ? "Deactivate"
-                    : "Activate"}
-            </button>
-            {activation === "active" && (
-              // Re-push the current canvas graph without a deactivate round-
-              // trip -- POST /graphs/{id}/activate is already idempotent
-              // server-side (replaces the prior registration outright), so
-              // this reuses handleActivate completely unchanged. Without
-              // this, an edit made after activating (e.g. removing an edge)
-              // silently has no effect until Deactivate+Activate, which is
-              // exactly the confusion that surfaced this gap.
-              <button
-                type="button"
-                className="run-bar__secondary"
-                onClick={() => void handleActivate()}
-                title="Push the current canvas graph to the already-active webhook/schedule"
-              >
-                Update
-              </button>
-            )}
-            {activation === "active" && <span className="run-bar__trigger-badge">● active</span>}
-            {activation === "active" && triggers && triggers.length > 0 && (
-              <span className="run-bar__triggers">
-                {triggers.map((t) => (
-                  <code key={t.node_id} className="run-bar__trigger-chip">
-                    {t.type === "webhook_trigger" ? `POST ${t.endpoint_or_schedule}` : `cron ${t.endpoint_or_schedule}`}
-                  </code>
-                ))}
-              </span>
-            )}
-            {run && <span className={`run-bar__status status-${run.status}`}>{run.status}</span>}
-            {mcpOAuthMessage && (
-              <span className="run-bar__error" onClick={() => setMcpOAuthMessage(null)} title="Dismiss">
-                {mcpOAuthMessage}
-              </span>
-            )}
-            {runError && <span className="run-bar__error">{runError}</span>}
-            {loadError && <span className="run-bar__error">{loadError}</span>}
-            {saveError && <span className="run-bar__error">{saveError}</span>}
-            {activationError && <span className="run-bar__error">{activationError}</span>}
-            <button
-              type="button"
-              className="run-bar__secondary run-bar__history-btn"
-              onClick={() => setShowHistory(true)}
-            >
-              History
-            </button>
-            <button type="button" className="run-bar__secondary" onClick={() => setShowSettings(true)}>
-              Settings
-            </button>
           </div>
           {showSharingPanel && (
             // spec-021: declaring a graph shared lets a non-author user run
@@ -1062,8 +1181,8 @@ function CanvasInner() {
             // reference literally used in this graph's node config (e.g.
             // "my-gmail") plus its connection type, so a runner's picker
             // can filter to compatible connections.
-            <div className="approval-banner">
-              <label className="approval-banner__remember">
+            <div className="flex flex-col gap-2 border-b border-border bg-[color-mix(in_srgb,var(--status-running)_10%,var(--background))] px-3.5 py-2.5">
+              <label className="flex cursor-pointer items-center gap-1.5 text-xs whitespace-nowrap text-muted-foreground">
                 <input
                   type="checkbox"
                   checked={sharing === "shared"}
@@ -1074,8 +1193,8 @@ function CanvasInner() {
               {sharing === "shared" && (
                 <>
                   {connectionSlots.map((slot, i) => (
-                    <div key={i} className="approval-banner__item">
-                      <input
+                    <div key={i} className="flex flex-wrap items-center gap-2.5">
+                      <Input
                         type="text"
                         placeholder="Slot name (e.g. my-gmail, matches a node's connection field)"
                         value={slot.slot_name}
@@ -1085,7 +1204,7 @@ function CanvasInner() {
                           )
                         }
                       />
-                      <input
+                      <Input
                         type="text"
                         placeholder="Connection type (e.g. anthropic, mcp_server)"
                         value={slot.connection_type}
@@ -1095,22 +1214,23 @@ function CanvasInner() {
                           )
                         }
                       />
-                      <button
+                      <Button
                         type="button"
-                        className="run-bar__secondary"
+                        variant="outline"
                         onClick={() => setConnectionSlots((prev) => prev.filter((_, j) => j !== i))}
                       >
                         Remove
-                      </button>
+                      </Button>
                     </div>
                   ))}
-                  <button
+                  <Button
                     type="button"
-                    className="run-bar__secondary"
+                    variant="outline"
+                    className="self-start"
                     onClick={() => setConnectionSlots((prev) => [...prev, { slot_name: "", connection_type: "" }])}
                   >
                     + Add slot
-                  </button>
+                  </Button>
                 </>
               )}
             </div>
@@ -1120,57 +1240,52 @@ function CanvasInner() {
             // mapped one or more of this shared graph's declared slots yet.
             // Picking one of their own connections here, once, is
             // remembered server-side for every future run.
-            <div className="approval-banner">
-              <span className="approval-banner__text">
+            <div className="flex flex-col gap-2 border-b border-border bg-[color-mix(in_srgb,var(--status-running)_10%,var(--background))] px-3.5 py-2.5">
+              <span className="min-w-[200px] flex-1 text-[13px] text-foreground">
                 This shared graph needs your own connections mapped before it can run:
               </span>
               {missingSlots.map((slot) => (
-                <div key={slot.slot_name} className="approval-banner__item">
-                  <span className="approval-banner__text">
+                <div key={slot.slot_name} className="flex flex-wrap items-center gap-2.5">
+                  <span className="min-w-[200px] flex-1 text-[13px] text-foreground">
                     {slot.slot_name} ({slot.connection_type})
                   </span>
-                  <span className="select-wrap">
-                    <select
-                      value={slotMappingDrafts[slot.slot_name] ?? ""}
-                      onChange={(e) =>
-                        setSlotMappingDrafts((prev) => ({ ...prev, [slot.slot_name]: e.target.value }))
-                      }
-                    >
-                      <option value="" disabled>
-                        Choose your connection...
-                      </option>
+                  <Select
+                    value={slotMappingDrafts[slot.slot_name] ?? ""}
+                    onValueChange={(v) => setSlotMappingDrafts((prev) => ({ ...prev, [slot.slot_name]: v }))}
+                  >
+                    <SelectTrigger className="w-[220px]">
+                      <SelectValue placeholder="Choose your connection..." />
+                    </SelectTrigger>
+                    <SelectContent>
                       {Object.entries(connectionTypeByName)
                         .filter(([, type]) => type === slot.connection_type)
                         .map(([name]) => (
-                          <option key={name} value={name}>
+                          <SelectItem key={name} value={name}>
                             {name}
-                          </option>
+                          </SelectItem>
                         ))}
-                    </select>
-                  </span>
+                    </SelectContent>
+                  </Select>
                 </div>
               ))}
-              <button
-                type="button"
-                onClick={() => void handleMapSlotsAndRun()}
-                disabled={mappingInProgress}
-              >
+              <Button type="button" className="self-start" onClick={() => void handleMapSlotsAndRun()} disabled={mappingInProgress}>
                 {mappingInProgress ? "Mapping..." : "Map & Run"}
-              </button>
-              {mappingError && <span className="run-bar__error">{mappingError}</span>}
+              </Button>
+              {mappingError && <span className="text-xs text-[var(--status-error)]">{mappingError}</span>}
             </div>
           )}
           {run && run.pending_approvals.length > 0 && (
             // spec-019: an approval-gated tool call is blocked mid-run,
             // waiting on a decision that used to only be answerable via a
             // terminal input() prompt -- see backend/execution/approvals.py.
-            <div className="approval-banner">
+            <div className="flex flex-col gap-2 border-b border-border bg-[color-mix(in_srgb,var(--status-running)_10%,var(--background))] px-3.5 py-2.5">
               {run.pending_approvals.map((p) => (
-                <div key={p.approval_id} className="approval-banner__item">
-                  <span className="approval-banner__text">
-                    Approve tool call <code>{p.tool_name}</code>({JSON.stringify(p.arguments)})?
+                <div key={p.approval_id} className="flex flex-wrap items-center gap-2.5">
+                  <span className="min-w-[200px] flex-1 text-[13px] text-foreground">
+                    Approve tool call <code className="rounded-[var(--radius-sm)] bg-card px-1.5 py-px text-xs">{p.tool_name}</code>(
+                    {JSON.stringify(p.arguments)})?
                   </span>
-                  <label className="approval-banner__remember">
+                  <label className="flex cursor-pointer items-center gap-1.5 text-xs whitespace-nowrap text-muted-foreground">
                     <input
                       type="checkbox"
                       checked={rememberApproval[p.approval_id] ?? false}
@@ -1180,23 +1295,24 @@ function CanvasInner() {
                     />
                     Don't ask again this run
                   </label>
-                  <button
+                  <Button
                     type="button"
+                    className="bg-[var(--status-running)] text-background hover:bg-[var(--status-running)]/90"
                     onClick={() =>
                       void handleResolveApproval(p.approval_id, true, rememberApproval[p.approval_id] ?? false)
                     }
                   >
                     Approve
-                  </button>
-                  <button
+                  </Button>
+                  <Button
                     type="button"
-                    className="run-bar__secondary"
+                    variant="outline"
                     onClick={() =>
                       void handleResolveApproval(p.approval_id, false, rememberApproval[p.approval_id] ?? false)
                     }
                   >
                     Reject
-                  </button>
+                  </Button>
                 </div>
               ))}
             </div>
@@ -1213,13 +1329,22 @@ function CanvasInner() {
               onNodeDragStop={onNodeDragStop}
               isValidConnection={isValidConnection}
               onNodeClick={(_, node) => setSelectedNodeId(node.id)}
-              onPaneClick={() => setSelectedNodeId(null)}
+              onPaneClick={handlePaneClick}
               defaultViewport={{ x: 0, y: 0, zoom: 1 }}
             >
               <Background />
               <Controls />
               <MiniMap />
             </ReactFlow>
+            <QuickAddSearch
+              anchor={quickAddAnchor}
+              nodeTypes={Object.values(nodeTypesByName)}
+              onClose={() => setQuickAddAnchor(null)}
+              onSelect={(nt) => {
+                if (quickAddFlowPosition) addNodeAtPosition(nt, quickAddFlowPosition);
+                setQuickAddAnchor(null);
+              }}
+            />
           </div>
         </div>
         <NodeInspectorPanel

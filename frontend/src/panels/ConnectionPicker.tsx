@@ -1,5 +1,9 @@
-import { ChevronDown } from "lucide-react";
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { cn } from "@/lib/utils";
 import {
   connectMcpOAuthViaPopup,
   createConnection,
@@ -33,6 +37,13 @@ interface ConnectionPickerProps {
 }
 
 const CATEGORY_LABELS: Record<string, string> = { local: "Local", cloud: "Cloud" };
+
+function connectionOptionLabel(c: ConnectionInfo): string {
+  let label = `${c.name} (${c.type})${c.is_global ? " — global" : ""}`;
+  if (c.requires_oauth) label += c.oauth_connected ? " ✓ connected" : " — needs OAuth";
+  if (c.auth_type !== "oauth2") label += c.api_key_connected ? " ✓ connected" : " — needs API key";
+  return label;
+}
 
 // Picks an existing named connection, or creates a new one inline -- tabs
 // generated from GET /connection-types' distinct `category` values (not
@@ -257,32 +268,33 @@ export function ConnectionPicker({
   const canPromote = isAdmin && !!selectedConnection && !selectedConnection.is_global && selectedConnection.can_manage;
 
   return (
-    <div className="connection-picker">
-      {loadError && <div className="config-panel__error">{loadError}</div>}
+    <div className="flex flex-col gap-2">
+      {loadError && <div className="text-xs text-[var(--status-error)]">{loadError}</div>}
 
-      <div className="connection-picker__row">
-        <span className="select-wrap">
-          <select
-            id="field-connection"
-            value={value ?? ""}
-            onChange={(e) => onChange(e.target.value)}
-          >
-            <option value="" disabled>
-              Select connection...
-            </option>
+      <div className="flex flex-wrap gap-1.5">
+        <Select value={value ?? ""} onValueChange={onChange}>
+          <SelectTrigger id="field-connection" className="min-w-0 flex-1">
+            {/* Radix's SelectValue only auto-derives display text from a
+                SelectItem that has actually mounted (i.e. after the
+                dropdown has been opened once) -- a value pre-populated
+                from an existing node's saved config would otherwise show
+                the placeholder instead of the real connection name.
+                Explicit children sidesteps that lookup entirely. */}
+            <SelectValue placeholder="Select connection...">
+              {selectedConnection ? connectionOptionLabel(selectedConnection) : undefined}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
             {connections.map((c) => (
-              <option key={c.name} value={c.name}>
-                {c.name} ({c.type}){c.is_global ? " — global" : ""}
-                {c.requires_oauth ? (c.oauth_connected ? " ✓ connected" : " — needs OAuth") : ""}
-                {c.auth_type !== "oauth2" ? (c.api_key_connected ? " ✓ connected" : " — needs API key") : ""}
-              </option>
+              <SelectItem key={c.name} value={c.name}>
+                {connectionOptionLabel(c)}
+              </SelectItem>
             ))}
-          </select>
-          <ChevronDown className="select-wrap__chevron" size={14} />
-        </span>
-        <button
+          </SelectContent>
+        </Select>
+        <Button
           type="button"
-          className="btn btn--secondary"
+          variant="outline"
           onClick={() => {
             setShowForm((s) => !s);
             setDraftScope("private");
@@ -295,10 +307,10 @@ export function ConnectionPicker({
           }}
         >
           {showForm ? "Cancel" : "+ New connection"}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
-          className="btn btn--secondary"
+          variant="outline"
           onClick={() => void handleDelete()}
           disabled={!value || deleting || !selectedConnection?.can_manage}
           title={
@@ -310,17 +322,17 @@ export function ConnectionPicker({
           }
         >
           {deleting ? "Deleting..." : "Delete"}
-        </button>
+        </Button>
         {canPromote && (
-          <button
+          <Button
             type="button"
-            className="btn btn--secondary"
+            variant="outline"
             onClick={() => void handlePromote()}
             disabled={promoting}
             title={`Make "${value}" visible to every user`}
           >
             {promoting ? "Promoting..." : "Promote to global"}
-          </button>
+          </Button>
         )}
       </div>
 
@@ -329,18 +341,19 @@ export function ConnectionPicker({
         // its tools do anything -- a real top-level navigation to Google's/
         // the server's own consent screen, not a fetch(). Returns here
         // (via a URL fragment Canvas.tsx already parses) once complete.
-        <div className="connection-picker__test-result failure">
+        <div className="flex flex-col items-start gap-2 rounded-[var(--radius-sm)] bg-[color-mix(in_srgb,var(--status-error)_15%,transparent)] p-2 text-xs text-[var(--status-error)]">
           <span>"{value}" needs to be connected before its tools will work.</span>
-          <button type="button" className="btn btn--primary" onClick={() => void handleConnectViaPopup()} disabled={poppingUp}>
-            {poppingUp ? "Connecting..." : "Connect"}
-          </button>
-          <a
-            className="btn btn--secondary"
-            href={mcpOAuthStartUrl(value ?? "", window.location.origin + window.location.pathname)}
-          >
-            Connect (full page)
-          </a>
-          {popupError && <div className="config-panel__error">{popupError}</div>}
+          <div className="flex gap-1.5">
+            <Button type="button" onClick={() => void handleConnectViaPopup()} disabled={poppingUp}>
+              {poppingUp ? "Connecting..." : "Connect"}
+            </Button>
+            <Button type="button" variant="outline" asChild>
+              <a href={mcpOAuthStartUrl(value ?? "", window.location.origin + window.location.pathname)}>
+                Connect (full page)
+              </a>
+            </Button>
+          </div>
+          {popupError && <div className="text-[var(--status-error)]">{popupError}</div>}
         </div>
       )}
 
@@ -349,34 +362,36 @@ export function ConnectionPicker({
         // block above -- no redirect, the caller pastes a key they
         // already generated (from the app's own developer/API settings)
         // and submits it directly.
-        <div className="connection-picker__test-result failure">
+        <div className="flex flex-col items-start gap-2 rounded-[var(--radius-sm)] bg-[color-mix(in_srgb,var(--status-error)_15%,transparent)] p-2 text-xs text-[var(--status-error)]">
           <span>"{value}" needs your personal API key/bearer token before its tools will work.</span>
-          <input
+          <Input
             type="password"
             value={apiKeyDraft}
             onChange={(e) => setApiKeyDraft(e.target.value)}
             placeholder="Paste your API key"
           />
-          <button
+          <Button
             type="button"
-            className="btn btn--primary"
             onClick={() => void handleSetApiKey()}
             disabled={settingApiKey || !apiKeyDraft.trim()}
           >
             {settingApiKey ? "Saving..." : "Connect"}
-          </button>
-          {apiKeyError && <div className="config-panel__error">{apiKeyError}</div>}
+          </Button>
+          {apiKeyError && <div className="text-[var(--status-error)]">{apiKeyError}</div>}
         </div>
       )}
 
       {showForm && (
-        <div className="connection-picker__form">
-          <div className="connection-picker__tabs">
+        <div className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-border bg-background p-2.5">
+          <div className="flex gap-1 border-b border-border">
             {categories.map((category) => (
               <button
                 key={category}
                 type="button"
-                className={`connection-picker__tab ${activeCategory === category ? "active" : ""}`}
+                className={cn(
+                  "cursor-pointer border-none border-b-2 border-b-transparent bg-transparent px-2.5 py-1 text-xs text-foreground opacity-60",
+                  activeCategory === category && "font-semibold border-b-primary opacity-100",
+                )}
                 onClick={() => selectCategory(category)}
               >
                 {CATEGORY_LABELS[category] ?? category}
@@ -385,28 +400,30 @@ export function ConnectionPicker({
           </div>
 
           {typesInActiveCategory.length > 1 && (
-            <span className="select-wrap">
-              <select
-                value={activeType ?? ""}
-                onChange={(e) => {
-                  setActiveType(e.target.value);
-                  setDraftConfig({});
-                  setTestResult(null);
-                }}
-              >
+            <Select
+              value={activeType ?? ""}
+              onValueChange={(v) => {
+                setActiveType(v);
+                setDraftConfig({});
+                setTestResult(null);
+              }}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue>{activeType || undefined}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
                 {typesInActiveCategory.map((t) => (
-                  <option key={t.type} value={t.type}>
+                  <SelectItem key={t.type} value={t.type}>
                     {t.type}
-                  </option>
+                  </SelectItem>
                 ))}
-              </select>
-              <ChevronDown className="select-wrap__chevron" size={14} />
-            </span>
+              </SelectContent>
+            </Select>
           )}
 
-          <div className="config-panel__field">
-            <label htmlFor="connection-draft-name">Connection name</label>
-            <input
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="connection-draft-name">Connection name</Label>
+            <Input
               id="connection-draft-name"
               type="text"
               value={draftName}
@@ -420,19 +437,17 @@ export function ConnectionPicker({
             // connections are always private, exactly the pre-spec-023
             // behavior. Global is admin-only, both here and enforced
             // server-side.
-            <div className="config-panel__field">
-              <label htmlFor="connection-draft-scope">Visibility</label>
-              <span className="select-wrap">
-                <select
-                  id="connection-draft-scope"
-                  value={draftScope}
-                  onChange={(e) => setDraftScope(e.target.value as "private" | "global")}
-                >
-                  <option value="private">Private -- only me</option>
-                  <option value="global">Global -- every user</option>
-                </select>
-                <ChevronDown className="select-wrap__chevron" size={14} />
-              </span>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="connection-draft-scope">Visibility</Label>
+              <Select value={draftScope} onValueChange={(v) => setDraftScope(v as "private" | "global")}>
+                <SelectTrigger id="connection-draft-scope" className="w-full">
+                  <SelectValue>{draftScope === "private" ? "Private -- only me" : "Global -- every user"}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="private">Private -- only me</SelectItem>
+                  <SelectItem value="global">Global -- every user</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           )}
 
@@ -444,13 +459,13 @@ export function ConnectionPicker({
               const requiredFields = new Set(activeTypeInfo.config_schema.required ?? []);
               return Object.entries(activeTypeInfo.config_schema.properties ?? {}).map(
                 ([name, propSchema]) => (
-                  <div key={name} className="config-panel__field">
-                    <label htmlFor={`field-${name}`}>
+                  <div key={name} className="flex flex-col gap-1">
+                    <Label htmlFor={`field-${name}`}>
                       {propSchema.title ?? name}
                       {!requiredFields.has(name) && (
-                        <span className="config-panel__optional-tag">optional</span>
+                        <span className="ml-1 text-[10px] font-normal text-muted-foreground italic">optional</span>
                       )}
-                    </label>
+                    </Label>
                     {renderPrimitiveField(name, propSchema, draftConfig[name], setDraftField)}
                   </div>
                 ),
@@ -459,30 +474,29 @@ export function ConnectionPicker({
 
           {testResult && (
             <div
-              className={`connection-picker__test-result ${testResult.success ? "success" : "failure"}`}
+              className={cn(
+                "rounded-[var(--radius-sm)] px-2 py-1.5 text-xs",
+                testResult.success
+                  ? "bg-[color-mix(in_srgb,var(--status-success)_15%,transparent)] text-[var(--status-success)]"
+                  : "bg-[color-mix(in_srgb,var(--status-error)_15%,transparent)] text-[var(--status-error)]",
+              )}
             >
               {testResult.message}
             </div>
           )}
-          {formError && <div className="config-panel__error">{formError}</div>}
+          {formError && <div className="text-xs text-[var(--status-error)]">{formError}</div>}
 
-          <div className="connection-picker__form-actions">
-            <button
-              type="button"
-              className="btn btn--secondary"
-              onClick={() => void handleTest()}
-              disabled={testing || !activeType}
-            >
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={() => void handleTest()} disabled={testing || !activeType}>
               {testing ? "Testing..." : "Test Connection"}
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className="btn btn--primary"
               onClick={() => void handleSaveNewConnection()}
               disabled={saving || !testResult?.success || !draftName}
             >
               {saving ? "Saving..." : "Save"}
-            </button>
+            </Button>
           </div>
         </div>
       )}

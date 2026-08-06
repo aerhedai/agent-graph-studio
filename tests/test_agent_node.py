@@ -249,6 +249,131 @@ def test_max_iterations_stops_a_never_ending_tool_loop():
     assert call_count == 3
 
 
+# --- nudge-and-retry when a local model silently skips tool-calling
+# (real bug: devstral:24b via Ollama, same failure class
+# ollama_connection.py's own complete_with_tools docstring already
+# documents for qwen2.5:14b -- describing an action in plain text instead
+# of populating the structured tool_calls field, even with tools connected
+# and needed) ------------------------------------------------------------
+
+
+def test_agent_nudges_and_retries_when_first_response_skips_tool_calling():
+    global _current_impl
+    call_count = 0
+    seen_messages_per_call = []
+
+    def impl(config, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        seen_messages_per_call.append([m["role"] for m in kwargs["messages"]])
+        if call_count == 1:
+            # Tools are connected and needed, but the model just describes
+            # the action instead of calling it -- the exact failure mode
+            # under test.
+            return ToolCallResponse(text="I would multiply 6 and 7 to get 42.", tool_calls=[])
+        if call_count == 2:
+            return ToolCallResponse(
+                text=None,
+                tool_calls=[ToolCallRequest(id="call_1", name="multiply_tool", arguments={"a": "6", "b": "7"})],
+            )
+        return ToolCallResponse(text="42", tool_calls=[])
+
+    _current_impl = impl
+
+    node = _agent_node()
+    tool_node = _multiply_tool_node()
+    ctx = _ctx(node, "What is 6 times 7?", [tool_node])
+
+    result = execute_agent(ctx)
+
+    # The retry actually happened (2 model calls before the tool call) and
+    # the tool genuinely got invoked and its real result incorporated --
+    # not just accepting the model's own described-but-never-executed answer.
+    assert call_count == 3
+    assert result.outputs == {"answer": "42"}
+    assert result.child_traces is not None
+    assert result.child_traces[0][0].outputs == {"result": "42"}
+    # The nudge's own reminder message is a real "user"-role turn the model
+    # actually sees on the retry, not silently dropped.
+    assert seen_messages_per_call[1][-1] == "user"
+
+
+def test_agent_nudge_fires_only_once_then_accepts_the_final_text_answer():
+    global _current_impl
+    call_count = 0
+
+    def impl(config, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        # Never calls the tool, even after the nudge -- a model that's
+        # genuinely unable to use tools for this task, not just briefly
+        # confused. Must not nudge forever; must eventually return the text.
+        return ToolCallResponse(text=f"response {call_count}", tool_calls=[])
+
+    _current_impl = impl
+
+    node = _agent_node()
+    tool_node = _multiply_tool_node()
+    ctx = _ctx(node, "What is 6 times 7?", [tool_node])
+
+    result = execute_agent(ctx)
+
+    # Exactly one nudge/retry -- not a second one, not zero.
+    assert call_count == 2
+    assert result.outputs == {"answer": "response 2"}
+    assert result.child_traces is None
+
+
+def test_agent_does_not_nudge_once_a_tool_has_already_been_called():
+    """The nudge is scoped to "no tool ever called yet" specifically so it
+    never second-guesses the model's own legitimate "I've used my tools,
+    here's my final answer" -- confirmed here by a fake impl that calls a
+    tool once, then stops, and asserting no extra (nudged) call happens."""
+    global _current_impl
+    call_count = 0
+
+    def impl(config, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return ToolCallResponse(
+                text=None,
+                tool_calls=[ToolCallRequest(id="call_1", name="multiply_tool", arguments={"a": "6", "b": "7"})],
+            )
+        return ToolCallResponse(text="The answer is 42.", tool_calls=[])
+
+    _current_impl = impl
+
+    node = _agent_node()
+    tool_node = _multiply_tool_node()
+    ctx = _ctx(node, "What is 6 times 7?", [tool_node])
+
+    result = execute_agent(ctx)
+
+    assert call_count == 2
+    assert result.outputs == {"answer": "The answer is 42."}
+
+
+def test_agent_does_not_nudge_when_no_tools_are_connected_at_all():
+    global _current_impl
+    call_count = 0
+
+    def impl(config, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return ToolCallResponse(text="Paris", tool_calls=[])
+
+    _current_impl = impl
+
+    node = _agent_node()
+    ctx = _ctx(node, "What is the capital of France?", [], include_tool_group=False)
+
+    result = execute_agent(ctx)
+
+    assert call_count == 1
+    assert result.outputs == {"answer": "Paris"}
+
+
 def test_memory_window_truncates_within_a_single_run():
     global _current_impl
     call_count = 0
@@ -420,6 +545,10 @@ def test_tool_schema_derivation_matches_referenced_code_node_params():
 
     def impl(config, **kwargs):
         captured_tools.extend(kwargs["tools"])
+        # Tools are connected but this fake impl never calls one -- the new
+        # nudge-and-retry (see test_agent_nudges_..._below) means this now
+        # makes two calls, not one; both see the identical tool schema, so
+        # that's still what this test is actually about.
         return ToolCallResponse(text="done", tool_calls=[])
 
     _current_impl = impl
@@ -430,7 +559,7 @@ def test_tool_schema_derivation_matches_referenced_code_node_params():
 
     execute_agent(ctx)
 
-    assert len(captured_tools) == 1
+    assert len(captured_tools) == 2
     tool_def = captured_tools[0]
     assert tool_def.name == "multiply_tool"
     assert set(tool_def.parameters["properties"].keys()) == {"a", "b"}
@@ -510,13 +639,16 @@ def test_sub_node_activity_notifies_memory_alongside_the_model_call():
     global _current_impl
     _current_impl = lambda config, **kwargs: ToolCallResponse(text="done", tool_calls=[])
 
+    # No tools connected -- this test is purely about memory's own
+    # activity-signal pairing, not tool-calling, so it's deliberately kept
+    # out of scope for the new nudge-and-retry (which only fires when tools
+    # are actually connected and never used).
     events: list[tuple[str, str, bool]] = []
     node = _agent_node()
-    tool_node = _multiply_tool_node()
     ctx = _ctx(
         node,
         "hi",
-        [tool_node],
+        [],
         memory_node=_memory_node(),
         on_sub_node_activity=lambda parent, sub, active: events.append((parent, sub, active)),
     )
@@ -538,13 +670,15 @@ def test_sub_node_activity_omits_memory_when_none_connected():
     global _current_impl
     _current_impl = lambda config, **kwargs: ToolCallResponse(text="done", tool_calls=[])
 
+    # No tools connected -- same "keep this test purely about memory,
+    # deliberately out of scope for the nudge-and-retry" reasoning as the
+    # test above.
     events: list[tuple[str, str, bool]] = []
     node = _agent_node()
-    tool_node = _multiply_tool_node()
     ctx = _ctx(
         node,
         "hi",
-        [tool_node],
+        [],
         on_sub_node_activity=lambda parent, sub, active: events.append((parent, sub, active)),
     )  # no memory_node passed
 

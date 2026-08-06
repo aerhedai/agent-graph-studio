@@ -1,5 +1,7 @@
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useEffect, useState } from "react";
 import type { SlotInfo, TraceRecord } from "../api/types";
+import { displayName } from "../canvas/GenericNode";
 import type { GenericFlowNode } from "../canvas/GenericNode";
 import { ConfigPanel } from "./ConfigPanel";
 import { TraceInspector } from "./TraceInspector";
@@ -47,45 +49,38 @@ export function NodeInspectorPanel({
 
   if (!node) {
     return (
-      <aside className="node-inspector node-inspector--empty">
+      <aside className="overflow-y-auto border-l border-border bg-card p-3 text-[13px] text-muted-foreground">
         <p>Select a node to edit its configuration or inspect its trace.</p>
       </aside>
     );
   }
 
   return (
-    <aside className="node-inspector">
-      <h2>{node.data.nodeType}</h2>
-      <p className="config-panel__id">{node.id}</p>
+    <aside className="overflow-y-auto border-l border-border bg-card p-3">
+      <h2 className="text-base font-semibold text-foreground">
+        {displayName(node.data.nodeType, node.data.integration)}
+      </h2>
+      <p className="mb-3 font-mono text-[11px] text-muted-foreground">{node.id}</p>
 
-      <div className="node-inspector__tabs">
-        <button
-          type="button"
-          className={tab === "config" ? "node-inspector__tab active" : "node-inspector__tab"}
-          onClick={() => setTab("config")}
-        >
-          Config
-        </button>
-        <button
-          type="button"
-          className={tab === "trace" ? "node-inspector__tab active" : "node-inspector__tab"}
-          onClick={() => setTab("trace")}
-          disabled={!hasRun}
-        >
-          Trace
-        </button>
-      </div>
-
-      {tab === "config" ? (
-        <ConfigPanel
-          node={node}
-          onConfigChange={onConfigChange}
-          connectedSubNodes={connectedSubNodes}
-          wiredInputSlotNames={wiredInputSlotNames}
-        />
-      ) : (
-        <TraceInspector traceRecord={traceRecord} isPending={hasRun && !traceRecord} />
-      )}
+      <Tabs value={tab} onValueChange={(v) => setTab(v as Tab)}>
+        <TabsList>
+          <TabsTrigger value="config">Config</TabsTrigger>
+          <TabsTrigger value="trace" disabled={!hasRun}>
+            Trace
+          </TabsTrigger>
+        </TabsList>
+        <TabsContent value="config">
+          <ConfigPanel
+            node={node}
+            onConfigChange={onConfigChange}
+            connectedSubNodes={connectedSubNodes}
+            wiredInputSlotNames={wiredInputSlotNames}
+          />
+        </TabsContent>
+        <TabsContent value="trace">
+          <TraceInspector traceRecord={traceRecord} isPending={hasRun && !traceRecord} />
+        </TabsContent>
+      </Tabs>
     </aside>
   );
 }
