@@ -14,7 +14,7 @@ import {
   type IsValidConnection,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Download, History as HistoryIcon, MoreHorizontal, Play, Settings as SettingsIcon, Upload } from "lucide-react";
+import { Download, History as HistoryIcon, KeyRound, MoreHorizontal, Play, Settings as SettingsIcon, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -60,6 +60,7 @@ import type {
 } from "../api/types";
 import { graphSpecToNodesAndEdges, nodesAndEdgesToGraphSpec } from "../graph/serialize";
 import { HistoryPanel } from "../panels/HistoryPanel";
+import { InvokeKeysPanel } from "../panels/InvokeKeysPanel";
 import { SettingsPanel } from "../panels/SettingsPanel";
 import { NodeInspectorPanel } from "../panels/NodeInspectorPanel";
 import {
@@ -196,6 +197,7 @@ function CanvasInner() {
   const [activationError, setActivationError] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showInvokeKeys, setShowInvokeKeys] = useState(false);
   const [triggers, setTriggers] = useState<TriggerInfo[] | null>(null);
   const { screenToFlowPosition } = useReactFlow();
   const updateNodeInternals = useUpdateNodeInternals();
@@ -1157,6 +1159,14 @@ function CanvasInner() {
                   <HistoryIcon className="size-4" />
                   History
                 </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={savedGraphId === null}
+                  title={savedGraphId === null ? "Save the graph first" : undefined}
+                  onClick={() => setShowInvokeKeys(true)}
+                >
+                  <KeyRound className="size-4" />
+                  Invoke keys
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setShowSettings(true)}>
                   <SettingsIcon className="size-4" />
                   Settings
@@ -1376,6 +1386,9 @@ function CanvasInner() {
         <HistoryPanel onClose={() => setShowHistory(false)} onSelectRun={(id) => void handleSelectHistoricalRun(id)} />
       )}
       {showSettings && <SettingsPanel onClose={() => setShowSettings(false)} />}
+      {showInvokeKeys && savedGraphId !== null && (
+        <InvokeKeysPanel graphId={savedGraphId} onClose={() => setShowInvokeKeys(false)} />
+      )}
       </GroupActionsContext.Provider>
     </ConnectionTypeContext.Provider>
   );

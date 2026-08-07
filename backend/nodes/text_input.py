@@ -10,6 +10,11 @@ from backend.schema.types import TEXT
 
 class TextInputConfig(BaseModel):
     value: str
+    label: str | None = None
+    """spec-029: external field name for this node when the graph is
+    called via the invoke API (`POST /graphs/{id}/invoke`). Falls back to
+    the node's own id when unset -- see backend/api/app.py's
+    `_build_contract`."""
 
 
 @register_node(

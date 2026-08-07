@@ -406,3 +406,66 @@ class InviteResponse(BaseModel):
     role: str
     invited_by: str | None
     invited_at: str
+
+
+# --- spec-029: invoke API -----------------------------------------------
+
+
+class InvokeContractField(BaseModel):
+    name: str
+    """External field name -- the node's `label` if set, else its `id`."""
+
+    node_id: str
+    direction: str
+    """"input" | "output"."""
+
+    required: bool
+    """Inputs only -- always False for an output field. An input is
+    required when its `text_input` node has no non-empty saved default
+    value (see backend/api/app.py's `_build_contract`)."""
+
+    default: str | None = None
+    """The saved value an omitted optional input falls back to. Always
+    None for a required input or an output field."""
+
+
+class InvokeContractResponse(BaseModel):
+    graph_id: str
+    inputs: list[InvokeContractField]
+    outputs: list[InvokeContractField]
+
+
+class InvokeGraphRequest(BaseModel):
+    inputs: dict[str, str] = {}
+
+
+class InvokeGraphResponse(BaseModel):
+    run_id: str
+    outputs: dict[str, str | None]
+    """A `text_output` node skipped by a pruned conditional branch never
+    receives a value -- its field comes back `None`, not omitted, so a
+    caller can always find every declared output field in the response."""
+
+
+class CreateInvokeKeyRequest(BaseModel):
+    label: str
+    timeout_seconds: int = 60
+
+
+class InvokeKeyInfo(BaseModel):
+    """Metadata only -- never includes the hash or plaintext token."""
+
+    key_id: str
+    label: str
+    key_prefix: str
+    timeout_seconds: int
+    created_at: str
+    created_by: str | None
+    last_used_at: str | None
+
+
+class CreateInvokeKeyResponse(BaseModel):
+    key: InvokeKeyInfo
+    token: str
+    """The plaintext invoke key -- returned exactly once, at creation.
+    Never retrievable again after this response."""

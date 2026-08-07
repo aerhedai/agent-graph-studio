@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -47,8 +48,15 @@ from backend.api.schemas import (
     ConnectionTypeInfo,
     CreateConnectionRequest,
     CreateGraphRequest,
+    CreateInvokeKeyRequest,
+    CreateInvokeKeyResponse,
     GraphDetail,
     GraphSummary,
+    InvokeContractField,
+    InvokeContractResponse,
+    InvokeGraphRequest,
+    InvokeGraphResponse,
+    InvokeKeyInfo,
     InviteRequest,
     InviteResponse,
     MeResponse,
@@ -99,7 +107,7 @@ from backend.mcp import api_key_storage, generated_nodes, oauth_flow, oauth_toke
 from backend.mcp.client import McpConnectionError
 from backend.registry.base import default_registry, effective_inputs, effective_outputs
 from backend.schema.models import GraphSpec, NodeSpec
-from backend.storage import graph_sharing_store, graphs_store, runs_store, settings_store, users_store
+from backend.storage import graph_sharing_store, graphs_store, invoke_keys_store, runs_store, settings_store, users_store
 from backend.triggers import registry as trigger_registry
 from backend.triggers import runner as trigger_runner
 from backend.triggers import scheduler as trigger_scheduler
@@ -213,6 +221,15 @@ def _require_admin(http_request: Request) -> None:
         raise HTTPException(status_code=403, detail="Admin access required")
 
 
+# spec-029: the only two route *path templates* (not literal paths -- these
+# contain the `{graph_id}` placeholder exactly as FastAPI/Starlette expose it
+# via `request.scope["route"].path`) an invoke key is ever accepted on. Never
+# add another route here without re-reading require_auth's docstring below --
+# this is the entire enforcement boundary for "an invoke key can't do
+# anything except invoke/preview its own one graph."
+_INVOKE_KEY_SCOPED_ROUTES = {"/graphs/{graph_id}/invoke", "/graphs/{graph_id}/contract"}
+
+
 def require_auth(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -224,22 +241,38 @@ def require_auth(
     ones added dynamically later via `app.add_api_route` (the webhook
     routes).
 
-    Accepts *either* credential, tried in this order:
+    Accepts credentials, tried in this order:
     1. A real JWT session (`Authorization: Bearer <jwt>`) -- a logged-in
        human via Google sign-in (spec-020). Sets `request.state.user`.
     2. The spec-017 shared API key, exactly as before (`Authorization:
        Bearer <key>` or `?key=<key>` -- the mechanism external callers
        like Telegram's webhook callbacks use, since they can't set a
        custom header). Leaves `request.state.user` as None.
+    3. spec-029: a per-graph invoke key, tried *only* when the matched
+       route is one of `_INVOKE_KEY_SCOPED_ROUTES` above. This is
+       deliberately a third branch inside this same dependency, not a
+       second `Depends(...)` added to just those two routes -- the global
+       dependency already runs (and would 401) before a second one ever
+       got a chance, since FastAPI runs `app`-level dependencies first.
+       Routing resolves before dependencies run, so
+       `request.scope["route"].path`/`request.path_params["graph_id"]`
+       are already populated here. Tiers 1-2 deliberately still work on
+       these two routes too (unchanged) -- a logged-in human can preview
+       a graph's contract or test-invoke it from its own settings panel
+       without minting a key first; only an invoke key is scoped this
+       narrowly. Sets `request.state.invoke_key` when this tier matches;
+       every other credential path leaves it None.
 
-    Deliberately one dependency accepting either, rather than classifying
-    routes as "human" vs "webhook" and giving each a different dependency
-    -- the acceptance bar is "the shared key keeps working everywhere
-    (regression) and JWTs now also work," not mutual exclusion, and this
-    keeps the "can't forget to protect one route" property a route-
-    differentiated design would risk losing.
+    Deliberately one dependency accepting all of the above, rather than
+    classifying routes as "human" vs "webhook" vs "invoke" and giving each
+    a different dependency -- the acceptance bar is "every existing
+    credential keeps working everywhere it already did (regression), and
+    an invoke key works on exactly two routes and nowhere else," not
+    mutual exclusion, and this keeps the "can't forget to protect one
+    route" property a route-differentiated design would risk losing.
     """
     request.state.user = None
+    request.state.invoke_key = None
     if request.url.path in _AUTH_EXEMPT_PATHS:
         return
 
@@ -256,8 +289,19 @@ def require_auth(
             return
 
     configured = _configured_api_key()
-    if supplied != configured:
-        raise HTTPException(status_code=401, detail="Missing or invalid credential")
+    if supplied == configured:
+        return
+
+    route = request.scope.get("route")
+    if supplied and getattr(route, "path", None) in _INVOKE_KEY_SCOPED_ROUTES:
+        graph_id = request.path_params.get("graph_id")
+        if graph_id is not None:
+            key_row = invoke_keys_store.validate_invoke_key(graph_id, supplied, now=_utcnow_iso())
+            if key_row is not None:
+                request.state.invoke_key = key_row
+                return
+
+    raise HTTPException(status_code=401, detail="Missing or invalid credential")
 
 
 def _utcnow_iso() -> str:
@@ -1899,3 +1943,279 @@ def list_connection_mappings(graph_id: str, http_request: Request) -> list[SlotM
         return []
     mappings = graph_sharing_store.get_mappings_for_user(user_id, graph_id)
     return [SlotMappingResponse(slot_name=k, connection_name=v) for k, v in mappings.items()]
+
+
+# --- spec-029: invoke API -------------------------------------------------
+
+DEFAULT_INVOKE_TIMEOUT_SECONDS = 60
+"""Used when POST /invoke is called by a JWT or the shared API key -- tiers
+1-2 of require_auth carry no configured timeout of their own (that's an
+invoke key's own property, set at creation), so there's nothing to look up
+for those callers."""
+
+_MAX_INVOKE_TIMEOUT_SECONDS = 300
+
+
+class ContractError(Exception):
+    """A malformed invoke contract -- two text_input (or two text_output)
+    nodes resolving to the same external field name (same explicit `label`,
+    or one node's `label` colliding with another's raw id). Distinct from
+    GraphValidationError, which covers the graph's own structural validity;
+    this is specifically about the invoke-facing contract layered on top.
+    Raised by _build_contract, translated to a 422 by every route that
+    calls it -- an ambiguous contract must fail loudly, not silently run
+    the wrong node."""
+
+
+def _build_contract(
+    graph: GraphSpec,
+) -> tuple[dict[str, str], dict[str, str], list[InvokeContractField], list[InvokeContractField]]:
+    """Derives the invoke-facing contract from a graph's structure --
+    spec-029's whole point is reusing `text_input`/`text_output` nodes as
+    the external boundary rather than inventing a parallel metadata layer.
+    An external field's name is that node's `label` if set, else its own
+    `id`. Returns (input_name -> node_id, output_name -> node_id, input
+    fields, output fields); raises ContractError on a name collision
+    within one direction."""
+    input_name_to_node_id: dict[str, str] = {}
+    output_name_to_node_id: dict[str, str] = {}
+    input_fields: list[InvokeContractField] = []
+    output_fields: list[InvokeContractField] = []
+
+    for node in graph.nodes:
+        if node.type == "text_input":
+            name = node.config.get("label") or node.id
+            if name in input_name_to_node_id:
+                raise ContractError(f"Two text_input nodes both resolve to external field name '{name}'")
+            input_name_to_node_id[name] = node.id
+            # spec-029 §7's resolved open question: a non-empty saved
+            # default makes the field optional (used if omitted); empty or
+            # absent makes it required.
+            default = node.config.get("value") or None
+            input_fields.append(
+                InvokeContractField(
+                    name=name, node_id=node.id, direction="input", required=default is None, default=default
+                )
+            )
+        elif node.type == "text_output":
+            name = node.config.get("label") or node.id
+            if name in output_name_to_node_id:
+                raise ContractError(f"Two text_output nodes both resolve to external field name '{name}'")
+            output_name_to_node_id[name] = node.id
+            output_fields.append(InvokeContractField(name=name, node_id=node.id, direction="output", required=False))
+
+    return input_name_to_node_id, output_name_to_node_id, input_fields, output_fields
+
+
+def _apply_inputs(graph: GraphSpec, input_name_to_node_id: dict[str, str], supplied: dict[str, str]) -> None:
+    """Overrides each supplied external input's value directly on the
+    matching `text_input` node's `config["value"]` -- the same field
+    `TextInputConfig.value`/`execute_text_input` already read, NOT
+    SPEC-025's `input_values` mechanism (that only satisfies a declared
+    INPUT SLOT with no incoming edge; `text_input` declares `inputs=[]`, so
+    it has no slot for `input_values` to attach to at all).
+
+    `graph` must be a disposable, freshly-parsed GraphSpec (every call site
+    parses fresh from `graphs_store.get_graph(...).spec_json` immediately
+    before this runs) -- mutating its `NodeSpec.config` dicts in place can
+    never write back to the persisted row, which only ever sees the
+    original JSON string again on the next `get_graph` call."""
+    nodes_by_id = {node.id: node for node in graph.nodes}
+    for name, value in supplied.items():
+        nodes_by_id[input_name_to_node_id[name]].config["value"] = value
+
+
+@app.get("/graphs/{graph_id}/contract", response_model=InvokeContractResponse)
+def get_graph_contract(graph_id: str) -> InvokeContractResponse:
+    """spec-029: the invoke-facing input/output field list for this graph,
+    derived from its text_input/text_output nodes -- lets a caller (or the
+    graph's own settings panel, for a human previewing before sharing a
+    key) discover what to send without reading the raw graph JSON.
+    Reachable by a JWT, the shared API key, or an invoke key scoped to
+    this graph_id (require_auth's tier 3)."""
+    graph_row = graphs_store.get_graph(graph_id)
+    if graph_row is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+    graph = GraphSpec.model_validate_json(graph_row.spec_json)
+    try:
+        _, _, input_fields, output_fields = _build_contract(graph)
+    except ContractError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    return InvokeContractResponse(graph_id=graph_id, inputs=input_fields, outputs=output_fields)
+
+
+@app.post("/graphs/{graph_id}/invoke", response_model=InvokeGraphResponse)
+def invoke_graph(graph_id: str, request: InvokeGraphRequest, http_request: Request) -> InvokeGraphResponse:
+    """spec-029: runs this one persisted graph synchronously (blocking the
+    request, no BackgroundTasks dispatch) and returns its named outputs --
+    the callable-workflow counterpart to POST /runs (which takes a whole
+    graph body and returns immediately). Never accepts a graph body itself
+    -- always loads the persisted spec by graph_id, so a caller only ever
+    needs the contract (GET .../contract), not the graph's internals.
+
+    Connection resolution runs as the graph owner's own identity
+    (`graph_row.created_by`) with no slot mappings -- an invoke caller
+    isn't a signed-in human with connections of their own to map. If a
+    genuinely different runner identity for invoke ever becomes a real
+    need, that's new scope for a later spec, not silently handled here.
+
+    Known limitation, not fixed by this spec: a graph that hits a mid-run
+    approval gate (backend/execution/approvals.py) has no human watching
+    to answer it when invoked externally -- it will exceed its timeout and
+    the underlying run can never complete. Inherent to approvals' existing
+    canvas-facing design, not introduced here."""
+    graph_row = graphs_store.get_graph(graph_id)
+    if graph_row is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+
+    graph = GraphSpec.model_validate_json(graph_row.spec_json)
+    try:
+        input_name_to_node_id, output_name_to_node_id, input_fields, _ = _build_contract(graph)
+    except ContractError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    unknown = sorted(set(request.inputs) - set(input_name_to_node_id))
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Unrecognized input field(s): {unknown}")
+
+    missing = sorted(f.name for f in input_fields if f.required and f.name not in request.inputs)
+    if missing:
+        raise HTTPException(status_code=422, detail=f"Missing required input field(s): {missing}")
+
+    _apply_inputs(graph, input_name_to_node_id, request.inputs)
+
+    run_by = graph_row.created_by
+    try:
+        validate_graph(graph, user_id=run_by)
+    except GraphValidationError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=[{"rule": issue.rule, "node_id": issue.node_id, "message": issue.message} for issue in e.issues],
+        ) from e
+
+    try:
+        resolved_connections = resolve_connections(graph, user_id=run_by)
+        resolved_connection_profiles = resolve_connection_profiles(graph, user_id=run_by)
+    except ConnectionNotFoundError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+
+    invoke_key = http_request.state.invoke_key
+    timeout_seconds = invoke_key.timeout_seconds if invoke_key is not None else DEFAULT_INVOKE_TIMEOUT_SECONDS
+
+    run_id = str(uuid4())
+    runs.create_run(run_id, graph_id=graph_id, trigger_source="invoke", run_by=run_by)
+    # A plain background thread, not BackgroundTasks -- this request must
+    # block until either the run finishes or the timeout elapses, neither
+    # of which BackgroundTasks (which only runs after the response is
+    # already sent) can express. `execute_run` is already a plain
+    # synchronous function (backend/api/runs.py) that persists its own
+    # final state via runs_store in a `finally` block regardless of who
+    # calls it or how long it takes -- daemon=True plus no further handling
+    # here is sufficient for the timeout case: the thread keeps running
+    # and persisting normally after this request returns.
+    thread = threading.Thread(
+        target=runs.execute_run,
+        args=(
+            run_id,
+            graph,
+            {
+                "connections": resolved_connections,
+                "connection_profiles": resolved_connection_profiles,
+                "running_user_id": run_by,
+                "slot_mappings": {},
+            },
+        ),
+        daemon=True,
+    )
+    thread.start()
+    thread.join(timeout_seconds)
+
+    if thread.is_alive():
+        raise HTTPException(
+            status_code=504,
+            detail={
+                "message": "Graph did not finish within the invoke timeout. It is still running in the "
+                "background -- poll GET /runs/{run_id} for the eventual result.",
+                "run_id": run_id,
+            },
+        )
+
+    snapshot = runs.get_run_snapshot(run_id)
+    assert snapshot is not None  # just created above via runs.create_run, must exist
+    if snapshot.status == "failed":
+        # Only reachable if run_graph() itself raised (a scheduler-level
+        # failure, not an individual node's) -- see the per-node check
+        # below for the far more common case.
+        raise HTTPException(status_code=500, detail={"message": snapshot.error, "run_id": run_id})
+
+    # A single node's own execution error never makes run_graph() raise --
+    # backend/execution/engine.py's `_execute_node` catches it and records
+    # `error` on that node's own TraceRecord instead (CLAUDE.md's "never
+    # silently swallow node execution errors... propagate a structured
+    # error to the graph-level trace"), while the run otherwise completes
+    # normally with whatever downstream nodes got skipped. An invoke
+    # caller integrating this as a callable operation needs a definitive
+    # pass/fail signal, not to have to separately poll GET /runs/{run_id}
+    # and inspect the trace themselves to notice a null output was
+    # actually a failure -- so this checks for it here.
+    failed_record = next((record for record in snapshot.trace if record.error is not None), None)
+    if failed_record is not None:
+        raise HTTPException(
+            status_code=500,
+            detail={"message": failed_record.error, "failed_node_id": failed_record.node_id, "run_id": run_id},
+        )
+
+    outputs = {name: (snapshot.result or {}).get(node_id) for name, node_id in output_name_to_node_id.items()}
+    return InvokeGraphResponse(run_id=run_id, outputs=outputs)
+
+
+def _invoke_key_info(row: invoke_keys_store.InvokeKeyRow) -> InvokeKeyInfo:
+    return InvokeKeyInfo(
+        key_id=row.key_id,
+        label=row.label,
+        key_prefix=row.key_prefix,
+        timeout_seconds=row.timeout_seconds,
+        created_at=row.created_at,
+        created_by=row.created_by,
+        last_used_at=row.last_used_at,
+    )
+
+
+@app.post("/graphs/{graph_id}/invoke-keys", response_model=CreateInvokeKeyResponse, status_code=201)
+def create_invoke_key(graph_id: str, request: CreateInvokeKeyRequest, http_request: Request) -> CreateInvokeKeyResponse:
+    """spec-029: mints a new invoke key, returned in plaintext exactly
+    once -- never retrievable again after this response. Standard auth
+    only (JWT or the shared key, never an invoke key -- see
+    _INVOKE_KEY_SCOPED_ROUTES, this path is deliberately excluded): key
+    management is a human/admin action, not something an invoke key can do
+    to itself."""
+    graph_row = graphs_store.get_graph(graph_id)
+    if graph_row is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+    if not (1 <= request.timeout_seconds <= _MAX_INVOKE_TIMEOUT_SECONDS):
+        raise HTTPException(
+            status_code=422, detail=f"timeout_seconds must be between 1 and {_MAX_INVOKE_TIMEOUT_SECONDS}"
+        )
+    row, token = invoke_keys_store.generate_invoke_key(
+        graph_id,
+        request.label,
+        _utcnow_iso(),
+        timeout_seconds=request.timeout_seconds,
+        created_by=_caller_user_id(http_request),
+    )
+    return CreateInvokeKeyResponse(key=_invoke_key_info(row), token=token)
+
+
+@app.get("/graphs/{graph_id}/invoke-keys", response_model=list[InvokeKeyInfo])
+def list_graph_invoke_keys(graph_id: str) -> list[InvokeKeyInfo]:
+    graph_row = graphs_store.get_graph(graph_id)
+    if graph_row is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+    return [_invoke_key_info(row) for row in invoke_keys_store.list_invoke_keys(graph_id)]
+
+
+@app.delete("/graphs/{graph_id}/invoke-keys/{key_id}", status_code=204)
+def delete_invoke_key(graph_id: str, key_id: str) -> None:
+    deleted = invoke_keys_store.revoke_invoke_key(graph_id, key_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Invoke key '{key_id}' not found")

@@ -123,6 +123,15 @@ def isolated_graph_sharing_db(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_GRAPH_STUDIO_GRAPH_SHARING_DB_PATH", str(tmp_path / "graph_sharing.db"))
 
 
+@pytest.fixture(autouse=True)
+def isolated_invoke_keys_db(tmp_path, monkeypatch):
+    """Every test gets its own empty, throwaway invoke-keys database -- no
+    test may ever read or write the real
+    ~/.agent-graph-studio/invoke_keys.db (spec-029). Mirrors
+    isolated_graphs_db above exactly."""
+    monkeypatch.setenv("AGENT_GRAPH_STUDIO_INVOKE_KEYS_DB_PATH", str(tmp_path / "invoke_keys.db"))
+
+
 # spec-020: three new required secrets, none of which any pre-existing test
 # needs to know or care about individually -- every existing
 # TestClient(app, headers={"Authorization": f"Bearer {TEST_API_KEY}"}) test

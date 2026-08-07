@@ -23,6 +23,7 @@ const TRIGGER_FILTER_LABELS: Record<string, string> = {
   manual: "Manual",
   schedule: "Schedule",
   webhook: "Webhook",
+  invoke: "Invoke",
 };
 
 const STATUS_BADGE_CLASSES: Record<string, string> = {
@@ -91,6 +92,7 @@ export function HistoryPanel({ onClose, onSelectRun }: HistoryPanelProps) {
               <SelectItem value="manual">Manual</SelectItem>
               <SelectItem value="schedule">Schedule</SelectItem>
               <SelectItem value="webhook">Webhook</SelectItem>
+              <SelectItem value="invoke">Invoke</SelectItem>
             </SelectContent>
           </Select>
           <Button type="button" variant="outline" onClick={refresh} disabled={loading}>
