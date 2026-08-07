@@ -4,10 +4,14 @@ import type {
   ConnectionInfo,
   ConnectionSlotSpec,
   ConnectionTypeInfo,
+  CreateInvokeKeyResponse,
   GraphDetail,
   GraphSpec,
   GraphSummary,
   InviteResponse,
+  InvokeContractResponse,
+  InvokeGraphResponse,
+  InvokeKeyInfo,
   MeResponse,
   MissingSlotInfo,
   NodeTypeInfo,
@@ -457,4 +461,46 @@ export function inviteUser(email: string, role = "member"): Promise<InviteRespon
     method: "POST",
     body: JSON.stringify({ email, role }),
   });
+}
+
+// --- spec-029: invoke API -------------------------------------------------
+
+export function fetchGraphContract(graphId: string): Promise<InvokeContractResponse> {
+  return request<InvokeContractResponse>(`/graphs/${encodeURIComponent(graphId)}/contract`);
+}
+
+export function invokeGraph(
+  graphId: string,
+  inputs: Record<string, string>,
+): Promise<InvokeGraphResponse> {
+  return request<InvokeGraphResponse>(`/graphs/${encodeURIComponent(graphId)}/invoke`, {
+    method: "POST",
+    body: JSON.stringify({ inputs }),
+  });
+}
+
+export function listInvokeKeys(graphId: string): Promise<InvokeKeyInfo[]> {
+  return request<InvokeKeyInfo[]>(`/graphs/${encodeURIComponent(graphId)}/invoke-keys`);
+}
+
+export function createInvokeKey(
+  graphId: string,
+  label: string,
+  timeoutSeconds: number,
+): Promise<CreateInvokeKeyResponse> {
+  return request<CreateInvokeKeyResponse>(`/graphs/${encodeURIComponent(graphId)}/invoke-keys`, {
+    method: "POST",
+    body: JSON.stringify({ label, timeout_seconds: timeoutSeconds }),
+  });
+}
+
+export async function revokeInvokeKey(graphId: string, keyId: string): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/graphs/${encodeURIComponent(graphId)}/invoke-keys/${encodeURIComponent(keyId)}`,
+    { method: "DELETE", headers: authHeaders() },
+  );
+  if (response.status === 401) throw new UnauthorizedError();
+  if (!response.ok) {
+    throw new Error(`DELETE /graphs/${graphId}/invoke-keys/${keyId} failed (${response.status})`);
+  }
 }

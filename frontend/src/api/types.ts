@@ -316,3 +316,42 @@ export interface InviteResponse {
   invited_by: string | null;
   invited_at: string;
 }
+
+// spec-029: invoke API, mirroring backend/api/schemas.py's
+// InvokeContractField/InvokeContractResponse/InvokeGraphRequest/
+// InvokeGraphResponse/CreateInvokeKeyRequest/InvokeKeyInfo/
+// CreateInvokeKeyResponse exactly.
+
+export interface InvokeContractField {
+  name: string;
+  node_id: string;
+  direction: "input" | "output";
+  required: boolean;
+  default: string | null;
+}
+
+export interface InvokeContractResponse {
+  graph_id: string;
+  inputs: InvokeContractField[];
+  outputs: InvokeContractField[];
+}
+
+export interface InvokeGraphResponse {
+  run_id: string;
+  outputs: Record<string, string | null>;
+}
+
+export interface InvokeKeyInfo {
+  key_id: string;
+  label: string;
+  key_prefix: string;
+  timeout_seconds: number;
+  created_at: string;
+  created_by: string | null;
+  last_used_at: string | null;
+}
+
+export interface CreateInvokeKeyResponse {
+  key: InvokeKeyInfo;
+  token: string;
+}
