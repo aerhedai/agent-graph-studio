@@ -8,6 +8,7 @@ import {
   connectMcpOAuthViaPopup,
   createConnection,
   deleteConnection,
+  fetchAppCatalog,
   fetchConnectionTypes,
   fetchConnections,
   getMe,
@@ -16,7 +17,8 @@ import {
   setConnectionApiKey,
   testConnection,
 } from "../api/client";
-import type { ConnectionInfo, ConnectionTypeInfo } from "../api/types";
+import type { AppCatalogEntryInfo, ConnectionInfo, ConnectionTypeInfo } from "../api/types";
+import { AppCatalogGallery } from "./AppCatalogGallery";
 import { renderPrimitiveField } from "./fieldRenderers";
 
 interface ConnectionPickerProps {
@@ -61,6 +63,10 @@ export function ConnectionPicker({
   const [allConnectionTypes, setAllConnectionTypes] = useState<ConnectionTypeInfo[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  // spec-030: "+ New connection" opens the catalog gallery first; picking
+  // a known app pre-fills the form below instead of starting blank.
+  const [catalogEntries, setCatalogEntries] = useState<AppCatalogEntryInfo[]>([]);
+  const [showCatalogGallery, setShowCatalogGallery] = useState(false);
 
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [activeType, setActiveType] = useState<string | null>(null);
@@ -114,8 +120,39 @@ export function ConnectionPicker({
     getMe()
       .then((me) => setIsAdmin(me.role === "admin"))
       .catch(() => setIsAdmin(false)); // a shared-API-key caller has no `me` -- treated as non-admin here (UI only; server-side it's unrestricted, see _require_admin's own docstring)
+    // spec-030: static per-deploy data, no refresh mechanism needed the way
+    // node types/connections themselves now have -- fetched once, same as
+    // connection *types* just above.
+    fetchAppCatalog()
+      .then(setCatalogEntries)
+      .catch(() => setCatalogEntries([])); // non-fatal -- "Custom connection" still works with an empty gallery
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // spec-030: applies a chosen catalog entry's non-secret fields to the
+  // draft config, then falls through to the exact same config form "Custom
+  // connection" reaches. requires_oauth is deliberately NOT pre-filled here
+  // -- confirmed live against the real create_connection route while
+  // implementing this spec: pre-setting it to true at creation time skips
+  // the server's own probe-then-register logic, which is what actually
+  // discovers/registers OAuth for a brand-new connection. Leaving it unset
+  // lets that same mechanism do its job, using whatever oauth_client_id/
+  // secret the admin fills in below.
+  function applyCatalogEntry(entry: AppCatalogEntryInfo) {
+    setActiveCategory(entry.category);
+    setActiveType("mcp_server");
+    const credentialType = requiredCredentialType ?? entry.credential_type ?? undefined;
+    setDraftConfig({
+      transport: "remote",
+      url: entry.server_url ?? "",
+      auth_type: entry.auth_type,
+      ...(entry.default_scope ? { oauth_scope: entry.default_scope } : {}),
+      ...(credentialType ? { credential_type: credentialType } : {}),
+    });
+    setTestResult(null);
+    setShowCatalogGallery(false);
+    setShowForm(true);
+  }
 
   useEffect(() => {
     if (activeCategory !== null) return;
@@ -306,8 +343,23 @@ export function ConnectionPicker({
           type="button"
           variant="outline"
           onClick={() => {
-            setShowForm((s) => !s);
+            if (showForm) {
+              setShowForm(false);
+              setShowCatalogGallery(false);
+              return;
+            }
             setDraftScope("private");
+            setDraftConfig({});
+            if (catalogEntries.length > 0) {
+              // spec-030: known apps first -- "Custom connection" inside
+              // the gallery reaches exactly today's original blank form.
+              setShowCatalogGallery(true);
+              setShowForm(true);
+              return;
+            }
+            // Catalog failed to load or is empty -- fall straight through
+            // to the original behavior rather than showing an empty gallery.
+            setShowForm(true);
             // spec-025: pre-fill so a connection created from this field
             // is tagged correctly without the user needing to retype the
             // credential type slug by hand.
@@ -406,7 +458,22 @@ export function ConnectionPicker({
         </div>
       )}
 
-      {showForm && (
+      {showForm && showCatalogGallery && (
+        <div className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-border bg-background p-2.5">
+          <AppCatalogGallery
+            entries={catalogEntries}
+            onSelect={applyCatalogEntry}
+            onCustom={() => {
+              setShowCatalogGallery(false);
+              if (requiredCredentialType) {
+                setDraftConfig((c) => ({ ...c, credential_type: requiredCredentialType }));
+              }
+            }}
+          />
+        </div>
+      )}
+
+      {showForm && !showCatalogGallery && (
         <div className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-border bg-background p-2.5">
           <div className="flex gap-1 border-b border-border">
             {categories.map((category) => (

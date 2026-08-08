@@ -11,6 +11,7 @@ import {
   connectMcpOAuthViaPopup,
   createConnection,
   deleteConnection,
+  fetchAppCatalog,
   fetchConnectionTypes,
   fetchConnections,
   fetchPrivateConnectionsSummary,
@@ -23,7 +24,14 @@ import {
   updateConnection,
   updateSettings,
 } from "../api/client";
-import type { ConnectionInfo, ConnectionTypeInfo, MeResponse, PrivateConnectionSummary } from "../api/types";
+import type {
+  AppCatalogEntryInfo,
+  ConnectionInfo,
+  ConnectionTypeInfo,
+  MeResponse,
+  PrivateConnectionSummary,
+} from "../api/types";
+import { AppCatalogGallery } from "./AppCatalogGallery";
 import { renderPrimitiveField } from "./fieldRenderers";
 
 interface SettingsPanelProps {
@@ -93,6 +101,10 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [connectionTypes, setConnectionTypes] = useState<ConnectionTypeInfo[]>([]);
   const [connError, setConnError] = useState<string | null>(null);
   const [showConnForm, setShowConnForm] = useState(false);
+  // spec-030: "+ New global connection" opens the catalog gallery first,
+  // same treatment as ConnectionPicker.tsx's own (separate) form state.
+  const [catalogEntries, setCatalogEntries] = useState<AppCatalogEntryInfo[]>([]);
+  const [showConnCatalogGallery, setShowConnCatalogGallery] = useState(false);
   const [connDraftName, setConnDraftName] = useState("");
   const [connDraftType, setConnDraftType] = useState<string | null>(null);
   const [connDraftConfig, setConnDraftConfig] = useState<Record<string, unknown>>({});
@@ -127,12 +139,35 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [popupErrors, setPopupErrors] = useState<Record<string, string>>({});
 
   function loadConnectionsAdminData() {
-    return Promise.all([fetchConnections(), fetchConnectionTypes(), fetchPrivateConnectionsSummary()]).then(
-      ([conns, types]) => {
-        setGlobalConnections(conns.filter((c) => c.is_global));
-        setConnectionTypes(types);
-      },
-    );
+    return Promise.all([
+      fetchConnections(),
+      fetchConnectionTypes(),
+      fetchPrivateConnectionsSummary(),
+      fetchAppCatalog().catch(() => []), // non-fatal -- "Custom connection" still works with an empty gallery
+    ]).then(([conns, types, , catalog]) => {
+      setGlobalConnections(conns.filter((c) => c.is_global));
+      setConnectionTypes(types);
+      setCatalogEntries(catalog);
+    });
+  }
+
+  // spec-030: applies a chosen catalog entry's non-secret fields to the
+  // global-connection draft, then falls through to the exact same config
+  // form "Custom connection" reaches. requires_oauth is deliberately NOT
+  // pre-filled -- see ConnectionPicker.tsx's applyCatalogEntry for the full
+  // reasoning (confirmed live while implementing this spec).
+  function applyCatalogEntryToGlobalDraft(entry: AppCatalogEntryInfo) {
+    setConnDraftType("mcp_server");
+    setConnDraftConfig({
+      transport: "remote",
+      url: entry.server_url ?? "",
+      auth_type: entry.auth_type,
+      ...(entry.default_scope ? { oauth_scope: entry.default_scope } : {}),
+      ...(entry.credential_type ? { credential_type: entry.credential_type } : {}),
+    });
+    setConnTestResult(null);
+    setShowConnCatalogGallery(false);
+    setShowConnForm(true);
   }
 
   useEffect(() => {
@@ -502,11 +537,36 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
               </div>
             ))}
 
-            <Button type="button" variant="outline" onClick={() => setShowConnForm((s) => !s)} className="self-start">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                if (showConnForm) {
+                  setShowConnForm(false);
+                  setShowConnCatalogGallery(false);
+                  return;
+                }
+                setConnDraftConfig({});
+                setConnDraftType(null);
+                setShowConnForm(true);
+                setShowConnCatalogGallery(catalogEntries.length > 0);
+              }}
+              className="self-start"
+            >
               {showConnForm ? "Cancel" : "+ New global connection"}
             </Button>
 
-            {showConnForm && (
+            {showConnForm && showConnCatalogGallery && (
+              <div className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-border bg-background p-2.5">
+                <AppCatalogGallery
+                  entries={catalogEntries}
+                  onSelect={applyCatalogEntryToGlobalDraft}
+                  onCustom={() => setShowConnCatalogGallery(false)}
+                />
+              </div>
+            )}
+
+            {showConnForm && !showConnCatalogGallery && (
               <div className="flex flex-col gap-2 rounded-[var(--radius-md)] border border-border bg-background p-2.5">
                 <div className="flex flex-col gap-1">
                   <Label htmlFor="new-global-conn-name">Connection name</Label>

@@ -171,6 +171,19 @@ export interface ConnectionTypeInfo {
   supports_embedding: boolean;
 }
 
+export interface AppCatalogEntryInfo {
+  key: string;
+  display_name: string;
+  description: string;
+  category: "local" | "cloud";
+  credential_type: string | null;
+  auth_type: "oauth2" | "api_key" | "bearer";
+  server_url: string | null;
+  default_scope: string | null;
+  requires_oauth: boolean;
+  setup_instructions: string | null;
+}
+
 export interface ConnectionInfo {
   name: string;
   type: string;

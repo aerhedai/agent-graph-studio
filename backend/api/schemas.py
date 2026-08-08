@@ -190,6 +190,23 @@ class ConnectionTypeInfo(BaseModel):
     supports_model_listing/supports_tool_calling."""
 
 
+class AppCatalogEntryInfo(BaseModel):
+    """spec-030: mirrors backend/mcp/app_catalog.py's AppCatalogEntry
+    exactly -- never includes anything secret, so this needs no special
+    authorization beyond normal sign-in."""
+
+    key: str
+    display_name: str
+    description: str
+    category: str
+    credential_type: str | None
+    auth_type: Literal["oauth2", "api_key", "bearer"]
+    server_url: str | None
+    default_scope: str | None
+    requires_oauth: bool
+    setup_instructions: str | None
+
+
 class ConnectionInfo(BaseModel):
     name: str
     type: str
