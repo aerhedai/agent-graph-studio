@@ -49,11 +49,28 @@ def fire(
         raise GraphNotActiveError(graph_id)
 
     graph = active.graph
-    resolved_connections = resolve_connections(graph)
-    resolved_connection_profiles = resolve_connection_profiles(graph)
+    # Bug fix: previously called with no user_id at all, which can only
+    # ever see *global* connections -- any trigger-fired graph referencing
+    # a private connection (the default for anything created through the
+    # normal UI, spec-021) would raise ConnectionNotFoundError here,
+    # uncaught, surfacing as a 500 to the external caller (e.g. Telegram
+    # reporting "Wrong response from the webhook: 500 Internal Server
+    # Error" and queuing pending updates indefinitely). `active.created_by`
+    # is the same owner identity activation/re-activation already resolve
+    # connections with -- see ActiveGraph's own docstring.
+    resolved_connections = resolve_connections(graph, user_id=active.created_by)
+    resolved_connection_profiles = resolve_connection_profiles(graph, user_id=active.created_by)
     resources: dict[str, Any] = {
         "connections": resolved_connections,
         "connection_profiles": resolved_connection_profiles,
+        # Same fix, one level deeper: a dynamically-generated MCP node
+        # backed by a *global* connection resolves whose OAuth token to use
+        # via resources["running_user_id"] (backend/mcp/generated_nodes.py's
+        # _make_execute) -- left unset, it would try to attach no one's
+        # token at all. A trigger fire always represents the graph owner's
+        # own automated execution (there's no other live caller identity to
+        # use), so this is the same `active.created_by` used above.
+        "running_user_id": active.created_by,
     }
     if payload is not None:
         resources["trigger_payloads"] = {node_id: payload}

@@ -302,7 +302,8 @@ def execute_agent(ctx: ExecutionContext) -> NodeResult:
                 "role": "assistant",
                 "content": response.text or "",
                 "tool_calls": [
-                    {"id": c.id, "name": c.name, "arguments": c.arguments} for c in response.tool_calls
+                    {"id": c.id, "name": c.name, "arguments": c.arguments, "metadata": c.metadata}
+                    for c in response.tool_calls
                 ],
             }
         )

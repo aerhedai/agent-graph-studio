@@ -84,6 +84,12 @@ const POLL_INTERVAL_MS = 500;
 // "has a new run appeared for this graph_id", not a foreground wait.
 const WATCH_INTERVAL_MS = 1750;
 
+// Node types and connection badges change rarely (a human took some action
+// in a connections panel), not continuously -- a much longer interval than
+// WATCH_INTERVAL_MS is deliberate, trading a little staleness for not
+// hammering the backend on every tick for data that's usually unchanged.
+const CAPABILITIES_REFRESH_INTERVAL_MS = 20000;
+
 let idCounter = 0;
 function nextNodeId(typeName: string): string {
   idCounter += 1;
@@ -246,38 +252,65 @@ function CanvasInner() {
     }
   }, []);
 
+  // Bug fix: both of these used to fetch exactly once, on mount, with
+  // nothing anywhere ever refetching them -- so anything that changes
+  // what node types or connections exist (bootstrapping catalog nodes,
+  // connecting/reconnecting an app, promoting a connection to global, or
+  // even just a change made from a *different* browser tab/session) never
+  // showed up here without a full page reload. This is the generic
+  // "whenever I do anything, the site needs refreshing" report: unlike
+  // run status (which already polls, see WATCH_INTERVAL_MS below), no
+  // other piece of app-wide state had any refresh mechanism at all.
+  // Polled on a much longer interval than run status -- this data changes
+  // rarely (a human took some action in a connections panel somewhere),
+  // not continuously -- rather than trying to thread an explicit
+  // "something changed" callback through every single mutating action
+  // across ConnectionPicker/SettingsPanel/InvokeKeysPanel, which is easy
+  // to miss a spot on (this bug is exactly that: several places already
+  // correctly refresh their own local list, e.g. ConnectionPicker's own
+  // connections dropdown, but nothing told Canvas about it too).
   useEffect(() => {
     if (needsUnlock) return;
-    fetchNodeTypes()
-      .then((types) => setNodeTypesByName(Object.fromEntries(types.map((t) => [t.type, t]))))
-      .catch((e: unknown) => {
-        if (e instanceof UnauthorizedError) {
-          setUnlockError("Your session expired -- please sign in again.");
-          setNeedsUnlock(true);
-        } else {
-          setLoadError(String(e));
-        }
-      });
-  }, [needsUnlock]);
 
-  useEffect(() => {
-    if (needsUnlock) return;
-    // spec-013 §5: a node's badge shows its connection's *type* (e.g.
-    // "ollama"), not just its name -- presentation-only lookup, so a
-    // fetch failure here shouldn't block the canvas from working; nodes
-    // simply render without a connection badge.
-    fetchConnections()
-      .then((connections) =>
-        setConnectionTypeByName(Object.fromEntries(connections.map((c) => [c.name, c.type]))),
-      )
-      .catch((e: unknown) => {
-        if (e instanceof UnauthorizedError) {
-          setUnlockError("Your session expired -- please sign in again.");
-          setNeedsUnlock(true);
-        } else {
-          console.error("Failed to load connections for node badges:", e);
-        }
-      });
+    function loadNodeTypes() {
+      fetchNodeTypes()
+        .then((types) => setNodeTypesByName(Object.fromEntries(types.map((t) => [t.type, t]))))
+        .catch((e: unknown) => {
+          if (e instanceof UnauthorizedError) {
+            setUnlockError("Your session expired -- please sign in again.");
+            setNeedsUnlock(true);
+          } else {
+            setLoadError(String(e));
+          }
+        });
+    }
+
+    function loadConnectionBadges() {
+      // spec-013 §5: a node's badge shows its connection's *type* (e.g.
+      // "ollama"), not just its name -- presentation-only lookup, so a
+      // fetch failure here shouldn't block the canvas from working; nodes
+      // simply render without a connection badge.
+      fetchConnections()
+        .then((connections) =>
+          setConnectionTypeByName(Object.fromEntries(connections.map((c) => [c.name, c.type]))),
+        )
+        .catch((e: unknown) => {
+          if (e instanceof UnauthorizedError) {
+            setUnlockError("Your session expired -- please sign in again.");
+            setNeedsUnlock(true);
+          } else {
+            console.error("Failed to load connections for node badges:", e);
+          }
+        });
+    }
+
+    loadNodeTypes();
+    loadConnectionBadges();
+    const id = window.setInterval(() => {
+      loadNodeTypes();
+      loadConnectionBadges();
+    }, CAPABILITIES_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(id);
   }, [needsUnlock]);
 
   useEffect(() => {

@@ -327,30 +327,45 @@ async def _lifespan(_app: FastAPI):
     # users_store, so (unlike regenerate_all_on_startup below) this is
     # safe to call directly on this coroutine's own event-loop thread.
     users_store.ensure_admin_bootstrapped(os.environ["AGENT_GRAPH_STUDIO_ADMIN_EMAIL"], _utcnow_iso())
+    # spec-019: rebuild every saved mcp_server connection's generated node
+    # set on startup -- the palette must be correct immediately after a
+    # restart, not only after each connection happens to be manually
+    # refreshed.
+    #
+    # Dispatched via asyncio.to_thread, NOT called directly: this calls real
+    # MCP discovery (backend/mcp/client.py's list_tools), which internally
+    # does its own asyncio.run() (same sync-over-async pattern used
+    # everywhere else MCP discovery happens). That fails outright when
+    # called directly from this coroutine, since _lifespan already runs on
+    # uvicorn's own event loop -- discovered live, restarting the backend
+    # after this feature was added. Every other MCP-discovery call site
+    # (POST /connections, POST /connections/{name}/refresh-capabilities) is
+    # a plain synchronous route handler, dispatched through Starlette's own
+    # worker thread, so it never hits this; startup is the one place this
+    # module runs directly on the event loop thread.
+    #
+    # Bug fix: this must run BEFORE _reactivate_persisted_graphs below, not
+    # after. A persisted graph referencing a dynamically-generated MCP node
+    # type (e.g. mcp__web-search__search) can only re-validate successfully
+    # once that type is actually registered -- with the old ordering,
+    # _reactivate_persisted_graphs always ran against a freshly-wiped node
+    # registry that hadn't been rebuilt yet, so validate_graph's
+    # unregistered_type check would reject any such graph outright, every
+    # single restart, regardless of whether the underlying MCP server was
+    # even reachable. Found live: a real activated "Simple telegram
+    # assistant" graph (using generated web-search MCP nodes) silently
+    # failed to re-activate on every restart, logged and swallowed by
+    # _reactivate_persisted_graphs's own per-graph try/except, leaving
+    # `GET /graphs/active` reporting it inactive and its webhook route
+    # returning a real 404 to external callers (Telegram) despite the graph
+    # showing is_active=true in storage the whole time.
+    await asyncio.to_thread(generated_nodes.regenerate_all_on_startup)
     # Spec-015: re-arm every persisted is_active graph's triggers on real
     # process startup -- `_reactivate_persisted_graphs` is defined later in
     # this module; that's fine, its name is only resolved when this
     # coroutine actually runs (real ASGI startup / TestClient's `with`
     # context), by which point the whole module has finished executing.
     _reactivate_persisted_graphs()
-    # spec-019: rebuild every saved mcp_server connection's generated node
-    # set on startup too, mirroring the graph-reactivation precedent above
-    # -- the palette must be correct immediately after a restart, not only
-    # after each connection happens to be manually refreshed.
-    #
-    # Dispatched via asyncio.to_thread, NOT called directly -- unlike
-    # _reactivate_persisted_graphs, this calls real MCP discovery
-    # (backend/mcp/client.py's list_tools), which internally does its own
-    # asyncio.run() (same sync-over-async pattern used everywhere else MCP
-    # discovery happens). That fails outright when called directly from
-    # this coroutine, since _lifespan already runs on uvicorn's own event
-    # loop -- discovered live, restarting the backend after this feature
-    # was added. Every other MCP-discovery call site (POST /connections,
-    # POST /connections/{name}/refresh-capabilities) is a plain synchronous
-    # route handler, dispatched through Starlette's own worker thread, so
-    # it never hits this; startup is the one place this module runs
-    # directly on the event loop thread.
-    await asyncio.to_thread(generated_nodes.regenerate_all_on_startup)
     yield
 
 
@@ -1747,7 +1762,7 @@ def activate_graph(graph_id: str, graph: GraphSpec, http_request: Request) -> Ac
         _deactivate(graph_id)  # don't leave a half-registered graph behind
         raise
 
-    trigger_registry.set_active(graph_id, graph, triggers)
+    trigger_registry.set_active(graph_id, graph, triggers, created_by=activated_by)
     graphs_store.set_active_state(graph_id, graph.model_dump_json(), is_active=True, updated_at=_utcnow_iso())
     return ActivateGraphResponse(status="active", triggers=[_to_schema_trigger(t) for t in triggers])
 
@@ -1795,7 +1810,7 @@ def _reactivate_persisted_graphs() -> None:
             # that activated it originally.
             validate_graph(graph, user_id=row.created_by)
             triggers = _register_triggers(row.graph_id, graph)
-            trigger_registry.set_active(row.graph_id, graph, triggers)
+            trigger_registry.set_active(row.graph_id, graph, triggers, created_by=row.created_by)
         except Exception:
             logger.exception("Failed to re-activate graph_id=%s on startup", row.graph_id)
 
