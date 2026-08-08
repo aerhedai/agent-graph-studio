@@ -1,6 +1,7 @@
 import type {
   ActivateGraphResponse,
   ActiveGraphInfo,
+  AppCatalogEntryInfo,
   ConnectionInfo,
   ConnectionSlotSpec,
   ConnectionTypeInfo,
@@ -213,6 +214,13 @@ export function listRuns(params: {
 
 export function fetchConnectionTypes(): Promise<ConnectionTypeInfo[]> {
   return request<ConnectionTypeInfo[]>("/connection-types");
+}
+
+// spec-030: the app catalog gallery's data source -- a small, static list
+// of known apps, so "+ New connection" can offer "pick a known app" instead
+// of only "fill out the full generic form".
+export function fetchAppCatalog(): Promise<AppCatalogEntryInfo[]> {
+  return request<AppCatalogEntryInfo[]>("/app-catalog");
 }
 
 export function fetchConnections(): Promise<ConnectionInfo[]> {

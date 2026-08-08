@@ -43,6 +43,7 @@ from backend.auth import jwt as auth_jwt
 from backend.api.schemas import (
     ActivateGraphResponse,
     ActiveGraphInfo,
+    AppCatalogEntryInfo,
     ConnectionInfo,
     ConnectionSlotSpec,
     ConnectionTypeInfo,
@@ -103,7 +104,7 @@ from backend.connections.store import (
     update_connection_config,
 )
 from backend.execution import approvals
-from backend.mcp import api_key_storage, generated_nodes, oauth_flow, oauth_token_storage, option_bindings
+from backend.mcp import api_key_storage, app_catalog, generated_nodes, oauth_flow, oauth_token_storage, option_bindings
 from backend.mcp.client import McpConnectionError
 from backend.registry.base import default_registry, effective_inputs, effective_outputs
 from backend.schema.models import GraphSpec, NodeSpec
@@ -761,6 +762,32 @@ def list_connection_types() -> list[ConnectionTypeInfo]:
             )
         )
     return infos
+
+
+@app.get("/app-catalog", response_model=list[AppCatalogEntryInfo])
+def list_app_catalog() -> list[AppCatalogEntryInfo]:
+    """spec-030: the gallery's entire data source -- a small, source-
+    controlled list of known apps (backend/mcp/app_catalog.py), each
+    proven to actually work against a real server before being added here.
+    No secrets ever live in an entry, so no authorization beyond normal
+    sign-in is needed; the picker still calls the exact same POST
+    /connections every hand-filled connection already goes through --
+    this is purely a pre-fill/discovery convenience, not a new mechanism."""
+    return [
+        AppCatalogEntryInfo(
+            key=entry.key,
+            display_name=entry.display_name,
+            description=entry.description,
+            category=entry.category,
+            credential_type=entry.credential_type,
+            auth_type=entry.auth_type,
+            server_url=entry.server_url,
+            default_scope=entry.default_scope,
+            requires_oauth=entry.requires_oauth,
+            setup_instructions=entry.setup_instructions,
+        )
+        for entry in app_catalog.CATALOG
+    ]
 
 
 def _connection_info(profile, caller_user_id: str | None = None, caller_role: str | None = None) -> ConnectionInfo:
