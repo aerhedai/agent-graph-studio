@@ -6,6 +6,8 @@ from apscheduler.triggers.cron import CronTrigger
 from fastapi.testclient import TestClient
 
 from backend.api.app import app
+from backend.auth import jwt as auth_jwt
+from backend.storage import users_store
 from backend.triggers import registry as trigger_registry
 from backend.triggers import scheduler as trigger_scheduler
 
@@ -251,3 +253,101 @@ def test_schedule_job_genuinely_fires_via_a_real_apscheduler_tick():
     assert after > before, "expected at least one real scheduler-fired run in ~3 seconds"
 
     _deactivate_quietly(graph_id)
+
+
+def test_webhook_fire_resolves_a_private_connection_owned_by_the_activating_user(monkeypatch):
+    """Regression test for a real bug found live: `trigger_runner.fire()`
+    previously called resolve_connections/resolve_connection_profiles with
+    no user_id at all, which can only ever see *global* connections. Any
+    activated graph referencing a *private* connection (the default for
+    anything created through the normal UI, spec-021) would raise
+    ConnectionNotFoundError inside fire() -- uncaught anywhere in the
+    webhook handler -- surfacing as a real, uncaught 500 to the external
+    caller. Found via a real Telegram webhook reporting exactly "Wrong
+    response from the webhook: 500 Internal Server Error" with pending
+    updates queuing up undelivered. The fix threads the activating user's
+    id through `ActiveGraph.created_by`. This test proves the webhook POST
+    itself now returns 200 (with a real run_id) instead of 500 -- that
+    alone is sufficient proof resolve_connections succeeded, since the
+    original bug's exception was raised and left uncaught before a run_id
+    could ever be created."""
+    import anthropic as anthropic_module
+
+    class _FakeBlock:
+        type = "text"
+        text = "hi"
+
+    class _FakeUsage:
+        input_tokens = 1
+        output_tokens = 1
+
+    class _FakeResponse:
+        content = [_FakeBlock()]
+        usage = _FakeUsage()
+
+    class _FakeMessages:
+        def create(self, **kwargs):
+            return _FakeResponse()
+
+    class _FakeAnthropicClient:
+        def __init__(self, api_key=None):
+            self.messages = _FakeMessages()
+
+    monkeypatch.setattr(anthropic_module, "Anthropic", _FakeAnthropicClient)
+
+    users_store.ensure_admin_bootstrapped("admin@example.com", "2026-01-01T00:00:00+00:00")
+    user = users_store.create_user(
+        user_id="trigger-owner-1",
+        email="trigger-owner-1@example.com",
+        display_name="Trigger Owner",
+        role="member",
+        created_at="2026-01-01T00:00:00+00:00",
+        invited_by=None,
+    )
+    token = auth_jwt.issue_token(user.id, user.email, user.role)
+    user_client = TestClient(app, headers={"Authorization": f"Bearer {token}"})
+
+    created = user_client.post(
+        "/connections",
+        json={"name": "my-private-anthropic", "type": "anthropic", "config": {"api_key": "sk-test"}},
+    )
+    assert created.status_code == 201
+
+    graph_id = "webhook-private-conn-graph"
+    spec = {
+        "version": "0.1",
+        "nodes": [
+            {"id": "trigger", "type": "webhook_trigger", "config": {}},
+            {"id": "adapter", "type": "generic_adapter", "config": {}},
+            {
+                "id": "call",
+                "type": "llm_call",
+                "config": {"connection": "my-private-anthropic", "model": "claude-haiku-4-5", "max_tokens": 10},
+            },
+        ],
+        "edges": [
+            {"kind": "sub_node", "slot": "trigger_adapter", "from": {"node": "adapter"}, "to": {"node": "trigger"}},
+            {"from": {"node": "trigger", "slot": "payload"}, "to": {"node": "call", "slot": "prompt"}},
+        ],
+    }
+    try:
+        # Activated by the connection's own owner -- exactly the real-world
+        # shape (a person activates their own graph, referencing their own
+        # private connections).
+        activate = user_client.post(f"/graphs/{graph_id}/activate", json=spec)
+        assert activate.status_code == 200
+        endpoint = activate.json()["triggers"][0]["endpoint_or_schedule"].split("?")[0]
+
+        # Fired by an external caller using only the shared API key --
+        # exactly how Telegram (or any real webhook source) actually calls
+        # in, with no JWT/user identity of its own.
+        fire = client.post(endpoint, json={"text": "hello"})
+        assert fire.status_code == 200, f"expected 200, got {fire.status_code}: {fire.text}"
+
+        run = _wait_for_run(fire.json()["run_id"])
+        assert run["status"] == "completed"
+        call_trace = next(t for t in run["trace"] if t["node_id"] == "call")
+        assert call_trace["error"] is None
+        assert call_trace["outputs"] == {"response": "hi"}
+    finally:
+        _deactivate_quietly(graph_id)

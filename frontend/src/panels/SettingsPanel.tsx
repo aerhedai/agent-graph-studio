@@ -408,6 +408,24 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     </Button>
                   </div>
                 )}
+                {c.requires_oauth && c.oauth_connected && (
+                  // Bug fix: oauth_connected only reflects "a token was
+                  // stored at some point", never "it's still valid" -- a
+                  // token expired/revoked upstream still reports connected
+                  // here, so this stays available rather than only
+                  // appearing once something has already broken.
+                  <div className="flex flex-wrap items-center gap-2 text-[13px] text-muted-foreground">
+                    <span>Tools not working?</span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void handleConnectViaPopup(c.name)}
+                      disabled={poppingUpFor === c.name}
+                    >
+                      {poppingUpFor === c.name ? "Reconnecting..." : "Reconnect"}
+                    </Button>
+                  </div>
+                )}
                 {popupErrors[c.name] && <ErrorText>{popupErrors[c.name]}</ErrorText>}
                 {c.auth_type !== "oauth2" && !c.api_key_connected && (
                   <div className="flex flex-col gap-1">

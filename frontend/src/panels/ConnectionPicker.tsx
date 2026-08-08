@@ -264,6 +264,16 @@ export function ConnectionPicker({
 
   const selectedConnection = connections.find((c) => c.name === value);
   const needsOAuthConnect = selectedConnection?.requires_oauth && !selectedConnection.oauth_connected;
+  // Bug fix: `oauth_connected` only reflects "a token was stored at some
+  // point" (backend/api/app.py's _connection_info), never "that token is
+  // still valid" -- a connection whose refresh token has since expired or
+  // been revoked upstream still reports oauth_connected=true, so the
+  // one-click Connect affordance above used to disappear exactly when it
+  // was most needed, leaving delete-and-recreate-the-whole-connection as
+  // the only way back in. This always offers a low-key reconnect option
+  // for any OAuth-requiring connection, whether or not it currently
+  // claims to be connected.
+  const canReconnectOAuth = selectedConnection?.requires_oauth && selectedConnection.oauth_connected;
   const needsApiKey = selectedConnection && selectedConnection.auth_type !== "oauth2" && !selectedConnection.api_key_connected;
   const canPromote = isAdmin && !!selectedConnection && !selectedConnection.is_global && selectedConnection.can_manage;
 
@@ -354,6 +364,21 @@ export function ConnectionPicker({
             </Button>
           </div>
           {popupError && <div className="text-[var(--status-error)]">{popupError}</div>}
+        </div>
+      )}
+
+      {canReconnectOAuth && (
+        // A stored token can go stale upstream (expired/revoked at the
+        // provider) without this app finding out until something actually
+        // tries to use it -- this stays available even while the
+        // connection still reports "connected", so fixing it never
+        // requires deleting and recreating the whole connection.
+        <div className="flex flex-wrap items-center gap-2 text-[13px] text-muted-foreground">
+          <span>Tools not working for "{value}"?</span>
+          <Button type="button" variant="outline" size="sm" onClick={() => void handleConnectViaPopup()} disabled={poppingUp}>
+            {poppingUp ? "Reconnecting..." : "Reconnect"}
+          </Button>
+          {popupError && <span className="text-[var(--status-error)]">{popupError}</span>}
         </div>
       )}
 

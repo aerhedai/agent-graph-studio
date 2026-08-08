@@ -36,13 +36,27 @@ class ActiveGraph:
     graph_id: str
     graph: GraphSpec
     triggers: list[TriggerRecord] = field(default_factory=list)
+    created_by: str | None = None
+    """The user id who activated this graph (or the graph's own
+    `created_by`, for startup re-activation, which has no live caller) --
+    same identity `resolve_connections`/`resolve_connection_profiles` need
+    everywhere else to see that user's own private connections, not just
+    global ones. A trigger-fired run (backend/triggers/runner.py's `fire`)
+    reads this to resolve connections the same way a manual run or
+    activation itself already does -- its previous omission of any
+    `user_id` meant a webhook/schedule-fired graph referencing a private
+    connection would always raise ConnectionNotFoundError, surfacing as an
+    uncaught 500 to the external caller (found live via a real Telegram
+    webhook failing with exactly this error)."""
 
 
 _active: dict[str, ActiveGraph] = {}
 
 
-def set_active(graph_id: str, graph: GraphSpec, triggers: list[TriggerRecord]) -> ActiveGraph:
-    record = ActiveGraph(graph_id=graph_id, graph=graph, triggers=triggers)
+def set_active(
+    graph_id: str, graph: GraphSpec, triggers: list[TriggerRecord], created_by: str | None = None
+) -> ActiveGraph:
+    record = ActiveGraph(graph_id=graph_id, graph=graph, triggers=triggers, created_by=created_by)
     _active[graph_id] = record
     return record
 

@@ -30,6 +30,19 @@ class ToolCallRequest:
     id: str
     name: str
     arguments: dict[str, Any]
+    metadata: dict[str, Any] | None = None
+    """Opaque, provider-specific continuation state a connection type may
+    need to correctly replay this exact call on a later turn -- e.g.
+    Gemini's `thought_signature` (a token its "thinking" models require to
+    preserve reasoning continuity across a multi-turn tool loop; omitting
+    it on a replayed function-call turn is a real, live-confirmed 400 from
+    Gemini's API). Deliberately NOT merged into `arguments`: `arguments` is
+    also handed directly to the actual tool invocation (backend/nodes/
+    agent.py's `_run_tool`), so anything provider-specific placed there
+    would leak into the tool call itself. Every other provider (Anthropic,
+    OpenAI, Ollama) leaves this None and ignores it entirely -- agent.py
+    only threads it through unread, a connection type's own
+    complete_with_tools is the sole reader/writer of its own metadata."""
 
 
 @dataclass(frozen=True)

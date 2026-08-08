@@ -268,8 +268,22 @@ def run_graph(
     [connected sub-node ids]`, computed from `graph.edges` here so it's
     always correct for the graph actually being run at each level, same as
     `nodes_by_id`.
+
+    Bug fix: this internal revalidation previously called `validate_graph`
+    with no `user_id`, meaning its `missing_connection` check could only
+    ever see *global* connections -- even when the caller (POST /runs,
+    activate, invoke, a trigger fire) had already correctly validated and
+    resolved the graph moments earlier using the right identity, this
+    second, internal check would reject any graph referencing a *private*
+    connection (spec-021's default for anything created through the normal
+    UI) outright, every single time, regardless of caller. Reads
+    `resources["running_user_id"]` -- already set by every real caller
+    (submit_run, invoke, and the trigger runner) for exactly this identity
+    -- rather than adding a new parameter to this function's public
+    signature; `loop`'s recursive call inherits it for free too, since it
+    already passes the same outer `resources` dict through unchanged.
     """
-    validate_graph(graph, registry)
+    validate_graph(graph, registry, user_id=(resources or {}).get("running_user_id"))
     sub_nodes: dict[tuple[str, str], list[str]] = {}
     for e in graph.edges:
         if e.kind == "sub_node":
