@@ -1,5 +1,7 @@
 # SPEC-030: App Catalog Gallery — Pre-Filled, One-Click-Feeling App Connections
 
+> **Amended by SPEC-031** (`docs/specs/031-connections-hub.md`): the "exactly 3 entries, verified-only" catalog-scope decision below (§3/§4) was deliberately widened — the catalog now also includes 7 real, live-confirmed-reachable but not yet end-to-end-proven apps (Linear, Atlassian, Stripe, Slack, Notion, Zoom, Figma), distinguished from the original 3 via a new `verified: bool` field. This section is left as written below as an accurate record of what was decided at the time, not edited in place.
+
 **Status:** Draft
 **Milestone:** User-facing ease-of-use push
 **Author:** Rohan
